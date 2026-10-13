@@ -2,98 +2,83 @@ package db;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.nio.channels.FileChannel;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
-import java.nio.file.StandardOpenOption;
-import java.util.ArrayList;
 import java.util.HashSet;
-import java.util.List;
 import java.util.Set;
 
-/** In-memory for now. In milestone 3 this becomes a Pager + pages. */
-public class Table implements AutoCloseable{
+public class Table implements AutoCloseable {
 
-    private final List<Row> rows;
-    private final Set<Integer> ids;
-    private final FileChannel channel;
+    public static final int ROWS_PER_PAGE = Pager.PAGE_SIZE / RowLayout.ROW_SIZE;  // 14
 
-    /** On-disk row: 4-byte id, then username and email as zero-padded UTF-8. */
-    private static final int ROW_SIZE = Integer.BYTES + Row.USERNAME_MAX + Row.EMAIL_MAX;
+    static final int MAGIC = 0x4A444231;          // "JDB1" in ASCII
+    static final int HEADER_MAGIC_OFFSET = 0;
+    static final int HEADER_NUM_ROWS_OFFSET = 4;
 
-    public Table(Path dbPath) throws IOException {
-        this.rows = new ArrayList<>();
-        this.ids = new HashSet<>();
-        this.channel = FileChannel.open(dbPath, StandardOpenOption.CREATE, StandardOpenOption.READ, StandardOpenOption.WRITE);
-        long size = channel.size();
-        int validLength = (int)(size-size%ROW_SIZE);
-        if(validLength != size){
-            channel.truncate(validLength);
-        }
-        ByteBuffer buf = ByteBuffer.allocate(validLength);
-        while(buf.hasRemaining()){
-            if(channel.read(buf, buf.position()) < 0){
-                throw new IOException("Unexpected end of file: " + dbPath);
+    private final Pager pager;
+    private final Set<Integer> ids = new HashSet<>();
+    private int numRows;
+
+    public Table(Path path) throws IOException {
+        this.pager = new Pager(path);
+
+        if (pager.numPages() == 0) {
+            ByteBuffer header = pager.getPage(0);
+            header.putInt(HEADER_MAGIC_OFFSET, MAGIC);
+            header.putInt(HEADER_NUM_ROWS_OFFSET, 0);
+            pager.flushPage(0);
+            pager.sync();
+            this.numRows = 0;
+        } else {
+            ByteBuffer header = pager.getPage(0);
+            if(header.getInt(HEADER_MAGIC_OFFSET) != MAGIC){
+                pager.close();
+                throw new IOException("Not a JDB1 database file: " + path);
             }
+            int storedRows = header.getInt(HEADER_NUM_ROWS_OFFSET);
+            int capacity = (pager.numPages() - 1) * ROWS_PER_PAGE;
+            if(storedRows < 0 || storedRows > capacity){
+                pager.close();
+                throw new IOException("Corrupt header: numRows=" + storedRows+ " but file only has room for " + capacity);
+            }
+            this.numRows = storedRows;
         }
-        buf.flip();
-        while(buf.hasRemaining()){
-            Row row = new Row(buf.getInt(), readString(buf, Row.USERNAME_MAX), readString(buf, Row.EMAIL_MAX));
-            this.ids.add(row.id());
-            this.rows.add(row);
+
+        for(Cursor c = Cursor.atStart(this); !c.isEndOfTable(); c.advance()){
+            ids.add(c.read().id());
         }
     }
 
-    private static String readString(ByteBuffer buf, int size) {
-        byte[] bytes = new byte[size];
-        buf.get(bytes);
-        int len = 0;
-        while(len < size && bytes[len] != 0){
-            len++;
-        }
-        return new String(bytes, 0, len, StandardCharsets.UTF_8);
+    Pager pager() {
+        return pager;
+    }
+
+    public int numRows() {
+        return numRows;
     }
 
     public void insert(Row row) throws ExecuteException {
         if(ids.contains(row.id())){
-            throw new ExecuteException("Id already present");
+            throw new ExecuteException("Id: " + row.id() + " already present in db");
         }
-        ByteBuffer buf = ByteBuffer.allocate(ROW_SIZE);
-        buf.putInt(row.id());
-        writeString(buf, row.username(), Row.USERNAME_MAX);
-        writeString(buf, row.email(), Row.EMAIL_MAX);
-
-        buf.flip();
-
-        // Write at the row's slot rather than the channel position, so a failed
-        // partial write is overwritten by the next insert instead of misaligning it.
-        long offset = (long) rows.size() * ROW_SIZE;
-        try{
-            while(buf.hasRemaining()){
-                channel.write(buf, offset + buf.position());
-            }
-        }catch (IOException e) {
-            throw new ExecuteException("Failed to write row to disk: " + e.getMessage());
+        try {
+            Cursor end = Cursor.atEnd(this);
+            end.write(row);
+            pager.flushPage(end.pageNum());
+            pager.sync();
+            
+            ByteBuffer header = pager.getPage(0);
+            header.putInt(HEADER_NUM_ROWS_OFFSET, numRows+1);
+            pager.flushPage(0);
+            pager.sync();
+        } catch (IOException e) {
+           throw new ExecuteException("Insert failed: " + e.getMessage());
         }
-        this.ids.add(row.id());
-        this.rows.add(row);
-    }
-
-    private static void writeString(ByteBuffer buf, String value, int size) throws ExecuteException {
-        byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
-        if(bytes.length > size){
-            throw new ExecuteException("String too long to store: " + value);
-        }
-        buf.put(bytes);
-        buf.position(buf.position() + size - bytes.length);
-    }
-
-    public List<Row> selectAll() {
-        return this.rows;
+        numRows++;
+        ids.add(row.id());
     }
 
     @Override
     public void close() throws IOException {
-        this.channel.close();
+        pager.close();
     }
 }

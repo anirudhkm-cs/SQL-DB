@@ -1,6 +1,7 @@
 package db;
 
-/** Execute stage: act on the table. Never looks at raw text. */
+import java.io.IOException;
+
 public final class Executor {
 
     private Executor() {}
@@ -15,9 +16,13 @@ public final class Executor {
                 table.insert(statement.row()); 
                 break;
             case SELECT:
-                for(Row row: table.selectAll()){
-                    System.out.println(formatRow(row));
-                }
+                try {
+                    for(Cursor c = Cursor.atStart(table); !c.isEndOfTable(); c.advance()){
+                        System.out.println(formatRow(c.read()));
+                    }
+                } catch (IOException e) {
+                    throw new ExecuteException("Select failed: " + e.getMessage());
+                } 
                 break;
             default:
                 break;
