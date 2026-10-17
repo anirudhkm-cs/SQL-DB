@@ -6,49 +6,44 @@ import java.nio.ByteBuffer;
 public class Cursor {
 
     private final Table table;
-    private int rowNum;
+    private final int pageNum;
+    private int cellNum;
     private boolean endOfTable;
 
-    private Cursor(Table table, int rowNum) {
+    Cursor(Table table, int pageNum, int cellNum) throws IOException {
         this.table = table;
-        this.rowNum = rowNum;
-        endOfTable = rowNum >= table.numRows();
+        this.pageNum = pageNum;
+        this.cellNum = cellNum;
+        ByteBuffer page = table.pager().getPage(pageNum);
+        this.endOfTable = cellNum>= LeafNode.numCells(page);
     }
 
-    public static Cursor atStart(Table table) {
-        return new Cursor(table, 0);
-    }
-
-    public static Cursor atEnd(Table table) {
-        return new Cursor(table, table.numRows());
+    public static Cursor atStart(Table table) throws IOException {
+        return new Cursor(table, table.rootPageNum(), 0);
     }
 
     public boolean isEndOfTable() {
         return endOfTable;
     }
 
-    public void advance() {
-        rowNum++;
-        endOfTable = rowNum>=table.numRows();
+    public void advance() throws IOException {
+        cellNum++;
+        ByteBuffer page = table.pager().getPage(pageNum);
+        if (cellNum >= LeafNode.numCells(page)) {
+            endOfTable = true;
+        }
     }
 
-    /*(page 0 is the header). */
     int pageNum() {
-        return 1 + rowNum/Table.ROWS_PER_PAGE;
+        return pageNum;
     }
 
-    int offsetInPage() {
-        return (rowNum % Table.ROWS_PER_PAGE) * RowLayout.ROW_SIZE;
+    int cellNum() {
+        return cellNum;
     }
 
     public Row read() throws IOException {
-        ByteBuffer page = table.pager().getPage(pageNum());
-        return RowLayout.deserialize(page, offsetInPage());
-        
-    }
-
-    public void write(Row row) throws IOException, ExecuteException {
-        ByteBuffer page = table.pager().getPage(pageNum());
-        RowLayout.serialize(row, page, offsetInPage());
+        ByteBuffer page = table.pager().getPage(pageNum);
+        return RowLayout.deserialize(page, LeafNode.valueOffset(cellNum));
     }
 }

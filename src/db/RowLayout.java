@@ -3,15 +3,6 @@ package db;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 
-/**
- * How a Row is laid out in bytes. Reads and writes a row at a given offset
- * inside a page buffer; it never allocates its own buffer.
- *
- * Layout (291 bytes):
- *   [0..4)     id        int, big-endian
- *   [4..36)    username  UTF-8, zero-padded
- *   [36..291)  email     UTF-8, zero-padded
- */
 public final class RowLayout {
 
     private RowLayout() {}

@@ -28,6 +28,11 @@ public class Main {
     private static boolean doMetaCommand(String line, Table table) throws IOException {
         if(line.equals(".exit")){
             exit(table);
+            return true;
+        }
+        if(line.equals(".btree")){
+            table.printTree();
+            return true;
         }
         return false;
     }
@@ -39,7 +44,14 @@ public class Main {
         }
         Path dbPath = Path.of(args[0]);
 
-        Table table = new Table(dbPath);
+        Table table;
+        try {
+            table = new Table(dbPath);
+        } catch (IOException e) {
+            System.err.println("Error opening " + dbPath + ": " + e.getMessage());
+            System.exit(1);
+            return;
+        }
 
         BufferedReader in = new BufferedReader(new InputStreamReader(System.in));
 
