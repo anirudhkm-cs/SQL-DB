@@ -16,7 +16,7 @@ public final class InternalNode {
 
     static final int REAL_MAX_KEYS = (Pager.PAGE_SIZE - HEADER_SIZE) / CELL_SIZE;
 
-    public static final int MAX_KEYS = 3;
+    public static final int MAX_KEYS = REAL_MAX_KEYS;
 
     public static void initialize(ByteBuffer page) {
         page.put(LeafNode.NODE_TYPE_OFFSET, LeafNode.TYPE_INTERNAL);

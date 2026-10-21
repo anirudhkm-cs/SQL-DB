@@ -34,6 +34,11 @@ public class Main {
             table.printTree();
             return true;
         }
+        if(line.equals(".check")){
+            String err = table.check();
+            System.out.println(err == null ? "OK" : err);
+            return true;
+        }
         return false;
     }
 

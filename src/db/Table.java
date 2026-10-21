@@ -3,31 +3,39 @@ package db;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Set;
+
 
 public class Table implements AutoCloseable {
 
     // ---- File header (page 0) ----
-    static final int MAGIC = 0x4A444233;        
+    static final int MAGIC = 0x4A444233;            
     static final int HEADER_MAGIC_OFFSET = 0;
     static final int HEADER_ROOT_PAGE_OFFSET = 4;
+    static final int ROOT_PAGE = 1;
 
     private final Pager pager;
     private int rootPageNum;
+
+    private final Set<Integer> dirty = new LinkedHashSet<>();
 
     public Table(Path path) throws IOException {
         this.pager = new Pager(path);
 
         if (pager.numPages() == 0) {
-            ByteBuffer root = pager.getPage(1);
+            ByteBuffer root = pager.getPage(ROOT_PAGE);
             LeafNode.initialize(root);
             LeafNode.setRoot(root, true);
 
             ByteBuffer header = pager.getPage(0);
             header.putInt(HEADER_MAGIC_OFFSET, MAGIC);
-            header.putInt(HEADER_ROOT_PAGE_OFFSET, 1);
-            this.rootPageNum = 1;
+            header.putInt(HEADER_ROOT_PAGE_OFFSET, ROOT_PAGE);
+            this.rootPageNum = ROOT_PAGE;
 
-            pager.flushPage(1);
+            pager.flushPage(ROOT_PAGE);
             pager.sync();
             pager.flushPage(0);
             pager.sync();
@@ -42,7 +50,6 @@ public class Table implements AutoCloseable {
                 pager.close();
                 throw new IOException("Corrupt database: root page " + root + " out of range");
             }
-
             ByteBuffer rootPage = pager.getPage(root);
             byte type = rootPage.get(LeafNode.NODE_TYPE_OFFSET);
             if (type != LeafNode.TYPE_LEAF && type != LeafNode.TYPE_INTERNAL) {
@@ -69,7 +76,7 @@ public class Table implements AutoCloseable {
     public Cursor find(int key) throws IOException {
         int pageNum = rootPageNum;
         ByteBuffer page = pager.getPage(pageNum);
-        while(!LeafNode.isLeaf(page)){
+        while (!LeafNode.isLeaf(page)) {
             pageNum = InternalNode.child(page, InternalNode.findChildIndex(page, key));
             page = pager.getPage(pageNum);
         }
@@ -94,6 +101,14 @@ public class Table implements AutoCloseable {
         return new Cursor(this, pageNum, low);
     }
 
+   
+    int subtreeMaxKey(int pageNum) throws IOException {
+        ByteBuffer page = pager.getPage(pageNum);
+        if(LeafNode.isLeaf(page)){
+            return LeafNode.maxKey(page);
+        }
+        return subtreeMaxKey(InternalNode.rightChild(page));
+    }
 
     public void insert(Row row) throws ExecuteException {
         try {
@@ -106,123 +121,317 @@ public class Table implements AutoCloseable {
             }
 
             if (numCells >= LeafNode.MAX_CELLS) {
-                splitAndInsert(c, row);      
-                return;
+                splitAndInsert(c, row);
+            } else {
+                LeafNode.insertCell(page, c.cellNum(), row.id(), row);
+                markDirty(c.pageNum());
             }
-
-            LeafNode.insertCell(page, c.cellNum(), row.id(), row);
-            pager.flushPage(c.pageNum());
-            pager.sync();
+            flushDirty();
         } catch (IOException e) {
+            dirty.clear();
             throw new ExecuteException("Insert failed: " + e.getMessage());
         }
     }
 
-    private void splitAndInsert(Cursor c, Row row) throws IOException, ExecuteException {
+    private void markDirty(int pageNum) {
+        dirty.add(pageNum);
+    }
+
+    private void flushDirty() throws IOException {
+        for (int pageNum: dirty){
+            if(pageNum!=ROOT_PAGE){
+                pager.flushPage(pageNum);
+            }
+        }
+        pager.sync();
+        if(dirty.contains(ROOT_PAGE)){
+            pager.flushPage(ROOT_PAGE);
+            pager.sync();
+        }
+        dirty.clear();
+    }
+
+    private void splitAndInsert(Cursor c, Row row) throws IOException {
         int oldPageNum = c.pageNum();
         ByteBuffer oldLeaf = pager.getPage(oldPageNum);
 
-        
         int oldMaxKey = LeafNode.maxKey(oldLeaf);
         boolean wasRoot = LeafNode.isRoot(oldLeaf);
         int parentPage = LeafNode.parent(oldLeaf);
 
-        if(!wasRoot && InternalNode.numKeys(pager.getPage(parentPage)) >= InternalNode.MAX_KEYS){
-            throw new ExecuteException("Table Full");
-        }
-
-        int newPageNum = pager.numPages();
+        int newPageNum = pager.allocatePage();
         ByteBuffer newLeaf = pager.getPage(newPageNum);
         LeafNode.initialize(newLeaf);
         LeafNode.setParent(newLeaf, parentPage);
 
-        for(int i = LeafNode.MAX_CELLS; i >= 0; i--){
-            ByteBuffer dest = i>= LeafNode.LEFT_SPLIT_COUNT ? newLeaf : oldLeaf;
+        for (int i = LeafNode.MAX_CELLS; i >= 0; i--) {
+            ByteBuffer dest = i >= LeafNode.LEFT_SPLIT_COUNT ? newLeaf : oldLeaf;
             int idx = i % LeafNode.LEFT_SPLIT_COUNT;
-            if(i == c.cellNum()){
+            if (i == c.cellNum()) {
                 LeafNode.writeCell(dest, idx, row.id(), row);
-            }else if(i > c.cellNum()){
-                LeafNode.copyCell(oldLeaf, i-1, dest, idx);
-            }else{
+            } else if (i > c.cellNum()) {
+                LeafNode.copyCell(oldLeaf, i - 1, dest, idx);
+            } else {
                 LeafNode.copyCell(oldLeaf, i, dest, idx);
             }
         }
         LeafNode.setNumCells(oldLeaf, LeafNode.LEFT_SPLIT_COUNT);
         LeafNode.setNumCells(newLeaf, LeafNode.RIGHT_SPLIT_COUNT);
 
-        // TODO 3: link siblings: new.next = old.next; old.next = new
-
         LeafNode.setNextLeaf(newLeaf, LeafNode.nextLeaf(oldLeaf));
         LeafNode.setNextLeaf(oldLeaf, newPageNum);
 
-        // TODO 4: fix up the tree above
-        //   old leaf was the root -> createNewRoot(newPageNum)
-        //   otherwise             -> updateParentAfterSplit(parent, oldPageNum, oldMaxKey, newPageNum)
+        markDirty(oldPageNum);
+        markDirty(newPageNum);
 
-        // TODO 5: flush every page you touched and sync.
-        //   Question 2: what ORDER is crash-safe here? Is there one?
-        //   Start simple (flush all, sync once), get it correct, then come back to this.
-
-        pager.flushPage(newPageNum);
-        if(wasRoot){
-            int leftChildPage = createNewRoot(newPageNum);
-            pager.flushPage(leftChildPage);
-        }else{
-            updateParentAfterSplit(parentPage, oldPageNum, oldMaxKey, newPageNum);
-            pager.flushPage(parentPage);
+        if (wasRoot) {
+            createNewRoot(newPageNum);
+        } else {
+            insertIntoParent(parentPage, oldPageNum, oldMaxKey, newPageNum);
         }
-        pager.flushPage(oldPageNum);
-        pager.sync();
+    }
+
+    private void insertIntoParent(int parentPage, int oldChildPage, int oldMaxKey, int newChildPage)
+            throws IOException {
+        ByteBuffer parent = pager.getPage(parentPage);
+        if (InternalNode.numKeys(parent) < InternalNode.MAX_KEYS) {
+            updateParentAfterSplit(parentPage, oldChildPage, oldMaxKey, newChildPage);
+        } else {
+            splitInternalAndInsert(parentPage, oldChildPage, oldMaxKey, newChildPage);
+        }
+    }
+
+    private void updateParentAfterSplit(int parentPage, int oldChildPage, int oldMaxKey, int newChildPage)
+            throws IOException {
+        ByteBuffer parent = pager.getPage(parentPage);
+        int n = InternalNode.numKeys(parent);
+
+        int i = InternalNode.findChildIndex(parent, oldMaxKey);
+        if (InternalNode.child(parent, i) != oldChildPage) {
+            throw new IllegalStateException("parent " + parentPage + " has no entry for child " + oldChildPage);
+        }
+
+        int oldChildNewMax = subtreeMaxKey(oldChildPage);
+
+        InternalNode.setNumKeys(parent, n + 1);
+        if (i < n) {
+            for (int j = n; j > i + 1; j--) {
+                InternalNode.setChild(parent, j, InternalNode.child(parent, j - 1));
+                InternalNode.setKey(parent, j, InternalNode.key(parent, j - 1));
+            }
+            InternalNode.setKey(parent, i, oldChildNewMax);
+            InternalNode.setChild(parent, i + 1, newChildPage);
+            InternalNode.setKey(parent, i + 1, oldMaxKey);
+        } else {
+            InternalNode.setChild(parent, n, oldChildPage);
+            InternalNode.setKey(parent, n, oldChildNewMax);
+            InternalNode.setRightChild(parent, newChildPage);
+        }
+        markDirty(parentPage);
+    }
+
+    private void splitInternalAndInsert(int nodePage, int oldChildPage, int oldMaxKey, int newChildPage)
+            throws IOException {
+        ByteBuffer node = pager.getPage(nodePage);
+        boolean wasRoot = LeafNode.isRoot(node);
+        int nodeParent = LeafNode.parent(node);
+
+        int oldNodeMaxKey = (InternalNode.rightChild(node) == oldChildPage) ? oldMaxKey : subtreeMaxKey(nodePage);
+
+        List<Integer> children = new ArrayList<>();
+        List<Integer> keys = new ArrayList<>();
+
+        int n = InternalNode.numKeys(node);
+        for(int j=0; j<n; j++){
+            children.add(InternalNode.child(node, j));
+            keys.add(InternalNode.key(node, j));
+        }
+        children.add(InternalNode.rightChild(node));
+
+        int i = children.indexOf(oldChildPage);
+        if(i<0){
+            throw new IllegalStateException("node " + nodePage + " has no entry for child " + oldChildPage);
+        }
+        int oldChildNewMax = subtreeMaxKey(oldChildPage);
+        if(i<children.size() - 1){
+            keys.set(i, oldChildNewMax);
+            children.add(i+1, newChildPage);
+            keys.add(i+1, oldMaxKey);
+        }else{
+            keys.add(oldChildNewMax);
+            children.add(newChildPage);
+        }
+        if(children.size() != keys.size()+1){
+            throw new IllegalStateException("split bookkeeping broken at node " + nodePage);
+        }
+
+        int rightPage = pager.allocatePage();
+        ByteBuffer right = pager.getPage(rightPage);
+        InternalNode.initialize(right);
+        LeafNode.setParent(right, nodeParent);
+
+        int L = (children.size()+1)/2;
+
+        InternalNode.setNumKeys(node, L-1);
+        for(int j=0; j<L-1; j++){
+            InternalNode.setChild(node, j, children.get(j));
+            InternalNode.setKey(node, j, keys.get(j));
+        }
+        InternalNode.setRightChild(node, children.get(L-1));
+
+        int rightCount = children.size()-L;
+        InternalNode.setNumKeys(right, rightCount-1);
+        for(int j=0; j<rightCount-1; j++){
+            InternalNode.setChild(right, j, children.get(L+j));
+            InternalNode.setKey(right, j, keys.get(L+j));
+        }
+        InternalNode.setRightChild(right, children.get(children.size()-1));
+        
+        for(int j=L; j<children.size(); j++){
+            int c = children.get(j);
+            LeafNode.setParent(pager.getPage(c), rightPage);
+            markDirty(c);
+        }
+
+        if(children.indexOf(newChildPage)<L){
+            LeafNode.setParent(pager.getPage(newChildPage), nodePage);
+            markDirty(newChildPage);
+        }
+        markDirty(nodePage);
+        markDirty(rightPage);
+
+        if(wasRoot){
+            createNewRoot(rightPage);
+        }else{
+            insertIntoParent(nodeParent, nodePage, oldNodeMaxKey, rightPage);
+        }
     }
 
     private int createNewRoot(int rightChildPage) throws IOException {
-        ByteBuffer root = pager.getPage(1);
+        ByteBuffer root = pager.getPage(ROOT_PAGE);
         ByteBuffer right = pager.getPage(rightChildPage);
 
-        int leftChildPage = pager.numPages();
+        int leftChildPage = pager.allocatePage();
         ByteBuffer left = pager.getPage(leftChildPage);
         System.arraycopy(root.array(), 0, left.array(), 0, Pager.PAGE_SIZE);
 
         LeafNode.setRoot(left, false);
-        LeafNode.setParent(left, 1);
-        LeafNode.setParent(right, 1);
+        LeafNode.setParent(left, ROOT_PAGE);
+        LeafNode.setParent(right, ROOT_PAGE);
+
+        if(!LeafNode.isLeaf(left)){
+            int n = InternalNode.numKeys(left);
+            for(int i=0; i<=n; i++){
+                int childPage = InternalNode.child(left, i);
+                LeafNode.setParent(pager.getPage(childPage), leftChildPage);
+                markDirty(childPage);
+            }
+        }
 
         InternalNode.initialize(root);
         LeafNode.setRoot(root, true);
         InternalNode.setNumKeys(root, 1);
         InternalNode.setChild(root, 0, leftChildPage);
-        InternalNode.setKey(root, 0, LeafNode.maxKey(left));
+
+        InternalNode.setKey(root, 0, subtreeMaxKey(leftChildPage));
         InternalNode.setRightChild(root, rightChildPage);
 
+        markDirty(ROOT_PAGE);
+        markDirty(leftChildPage);
+        markDirty(rightChildPage);
         return leftChildPage;
     }
 
-    private void updateParentAfterSplit(int parentPage, int oldChildPage, int oldMaxKey, int newChildPage)
-            throws IOException {
-        
-        ByteBuffer parent = pager.getPage(parentPage);
-        int n = InternalNode.numKeys(parent);
+    public String check() throws IOException {
+        List<Integer> leavesInOrder = new ArrayList<>();
+        int[] leafDepth = {-1}; 
 
-        int i = InternalNode.findChildIndex(parent, oldMaxKey);
-        if(InternalNode.child(parent, i) != oldChildPage){
-            throw new IllegalStateException("parent " + parentPage + " has no entry for child " + oldChildPage);
+
+        String err = checkNode(rootPageNum, 0, 0, leavesInOrder, leafDepth);
+        if(err!=null){
+            return err;
         }
 
-        int oldChildNewMax = LeafNode.maxKey(pager.getPage(oldChildPage));
-        InternalNode.setNumKeys(parent, n+1);
-        if(i<n){
-            for(int j=n; j > i+1; j--){
-                InternalNode.setChild(parent, j, InternalNode.child(parent, j-1));
-                InternalNode.setKey(parent, j, InternalNode.key(parent, j-1));
+        int pageNum = leavesInOrder.get(0);
+        boolean havePrev = false;
+        int prevKey = 0;
+
+        for(int i=0; i<leavesInOrder.size(); i++){
+            if(pageNum == 0){
+                return "leaf chain: ended after " + i + " leaves, expected " + leavesInOrder.size();
             }
-            InternalNode.setKey(parent, i, oldChildNewMax);
-            InternalNode.setChild(parent, i+1, newChildPage);
-            InternalNode.setKey(parent, i+1, oldMaxKey);
-        }else{
-            InternalNode.setChild(parent, n, oldChildPage);
-            InternalNode.setKey(parent, n, oldChildNewMax);
-            InternalNode.setRightChild(parent, newChildPage);
+            if(pageNum != leavesInOrder.get(i)){
+                return "leaf chain: step " + i + " is page " + pageNum + ", expected " + leavesInOrder.get(i);
+            }
+
+            ByteBuffer page = pager.getPage(pageNum);
+            int n = LeafNode.numCells(page);
+            for(int c=0; c<n; c++){
+                int k = LeafNode.key(page, c);
+                if(havePrev && k<=prevKey){
+                    return "leaf chain: key " + k + " in leaf " + pageNum + " is not greater than previous key " + prevKey;
+                }
+                prevKey = k;
+                havePrev = true;
+            }
+            pageNum = LeafNode.nextLeaf(page);
         }
+
+        if(pageNum != 0){
+            return "leaf chain: last leaf " + leavesInOrder.get(leavesInOrder.size() - 1) + " points to page " + pageNum + ", expected 0";
+        }
+        return null;
+    }
+
+    private String checkNode(int pageNum, int expectedParent, int depth,
+                             List<Integer> leavesInOrder, int[] leafDepth) throws IOException {
+        ByteBuffer page = pager.getPage(pageNum);
+
+        if (pageNum != rootPageNum && LeafNode.isRoot(page)) {
+            return "page " + pageNum + ": root flag set on non-root page";
+        }
+        if (pageNum != rootPageNum && LeafNode.parent(page) != expectedParent){
+            return "page " + pageNum + ": parent is " + LeafNode.parent(page) + ", expected " + expectedParent;
+        }
+        if (LeafNode.isLeaf(page)) {
+            int n = LeafNode.numCells(page);
+            for(int i=1; i<n; i++){
+                if(LeafNode.key(page, i-1) >= LeafNode.key(page, i)){
+                    return "leaf " + pageNum + ": keys not increasing at cell " + i + " (" + LeafNode.key(page, i - 1) + ", " + LeafNode.key(page, i) + ")";
+                }
+            }
+            if(leafDepth[0] == -1){
+                leafDepth[0] = depth;
+            }else if(depth != leafDepth[0]){
+                return "leaf " + pageNum + ": depth " + depth + ", expected " + leafDepth[0];
+            }
+            leavesInOrder.add(pageNum);
+        } else {
+            
+            int n = InternalNode.numKeys(page);
+            if(n < 1 || n > InternalNode.MAX_KEYS){
+                return "internal " + pageNum + ": numKeys " + n + " out of range [1, " + InternalNode.MAX_KEYS + "]";
+            }
+            for(int i=1; i<n; i++){
+                if(InternalNode.key(page, i-1) >= InternalNode.key(page, i)){
+                    return "internal " + pageNum + ": keys not increasing at " + i + " (" + InternalNode.key(page, i - 1) + ", " + InternalNode.key(page, i) + ")";
+                }
+            }
+            for(int i=0; i<=n; i++){
+                int child = InternalNode.child(page, i);
+                String err = checkNode(child, pageNum, depth+1, leavesInOrder, leafDepth);
+                if(err!=null){
+                    return err;
+                }
+                if(i<n){
+                    int max = subtreeMaxKey(child);
+                    if(InternalNode.key(page, i) != max){
+                        return "internal " + pageNum + ": key " + i + " is " + InternalNode.key(page, i) + " but subtree max of child " + child + " is " + max;
+                    }
+                }
+            }
+        }
+        return null;
     }
 
     public void printTree() throws IOException {
