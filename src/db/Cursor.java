@@ -6,7 +6,7 @@ import java.nio.ByteBuffer;
 public class Cursor {
 
     private final Table table;
-    private final int pageNum;
+    private int pageNum;        
     private int cellNum;
     private boolean endOfTable;
 
@@ -15,11 +15,11 @@ public class Cursor {
         this.pageNum = pageNum;
         this.cellNum = cellNum;
         ByteBuffer page = table.pager().getPage(pageNum);
-        this.endOfTable = cellNum>= LeafNode.numCells(page);
+        this.endOfTable = cellNum >= LeafNode.numCells(page);
     }
 
     public static Cursor atStart(Table table) throws IOException {
-        return new Cursor(table, table.rootPageNum(), 0);
+        return table.find(Integer.MIN_VALUE); 
     }
 
     public boolean isEndOfTable() {
@@ -30,7 +30,13 @@ public class Cursor {
         cellNum++;
         ByteBuffer page = table.pager().getPage(pageNum);
         if (cellNum >= LeafNode.numCells(page)) {
-            endOfTable = true;
+            int next = LeafNode.nextLeaf(page);
+            if(next == 0){
+                endOfTable = true;
+            }else{
+                pageNum = next;
+                cellNum = 0;
+            }
         }
     }
 
