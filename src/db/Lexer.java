@@ -14,7 +14,9 @@ public final class Lexer {
             "values", TokenType.VALUES,
             "select", TokenType.SELECT,
             "from", TokenType.FROM,
-            "where", TokenType.WHERE);
+            "where", TokenType.WHERE,
+            "create", TokenType.CREATE,     
+            "table", TokenType.TABLE);      
 
     private static final Map<Character, TokenType> SYMBOLS = Map.of(
             '(', TokenType.LPAREN,

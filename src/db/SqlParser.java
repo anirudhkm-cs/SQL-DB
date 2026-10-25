@@ -56,8 +56,10 @@ public final class SqlParser {
             stmt = parseInsert();
         }else if(check(TokenType.SELECT)){
             stmt = parseSelect();
+        }else if(check(TokenType.CREATE)){           
+            stmt = parseCreate();
         }else{
-            throw error("expected INSERT or SELECT");
+            throw error("expected INSERT, SELECT or CREATE");
         }
         match(TokenType.SEMICOLON);
         expect(TokenType.EOF, "end of input");
@@ -97,6 +99,34 @@ public final class SqlParser {
             where = new Ast.Where(column, parseValue());
         }
         return new Ast.Select(columns, table, where);
+    }
+
+
+    private Ast.CreateTable parseCreate() throws PrepareException {
+        expect(TokenType.CREATE, "CREATE");
+        expect(TokenType.TABLE, "TABLE");
+        Ast.Name table = parseName("table name");
+        expect(TokenType.LPAREN, "'('");
+        List<Ast.ColumnDef> columns = new ArrayList<>();
+        do {
+            columns.add(parseColumnDef());
+        } while (match(TokenType.COMMA));
+        expect(TokenType.RPAREN, "')' or ','");
+        return new Ast.CreateTable(table, columns);
+    }
+
+    private Ast.ColumnDef parseColumnDef() throws PrepareException {
+        Ast.Name name = parseName("column name");
+        Ast.Name type = parseName("type name");
+        Ast.IntLiteral size = null;
+        if(match(TokenType.LPAREN)){
+            if (!check(TokenType.INTEGER)){
+                throw error("expected column size");
+            }
+            size = (Ast.IntLiteral) parseValue();
+            expect(TokenType.RPAREN, "')'");
+        }
+        return new Ast.ColumnDef(name, type, size);
     }
 
     private Ast.Literal parseValue() throws PrepareException {

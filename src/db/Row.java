@@ -1,6 +1,19 @@
 package db;
 
-public record Row(int id, String username, String email) {
-    public static final int USERNAME_MAX = 32;
-    public static final int EMAIL_MAX = 255;
+import java.util.List;
+
+
+public record Row(List<Object> values) {
+
+    public Row {
+        values = List.copyOf(values);
+    }
+
+    public Object get(int column) {
+        return values.get(column);
+    }
+
+    public int key() {
+        return (Integer) values.get(0);
+    }
 }

@@ -5,27 +5,33 @@ import java.util.List;
 import java.util.Objects;
 import java.util.StringJoiner;
 
-/** Execute stage: act on the table. Never looks at raw text. */
 public final class Executor {
 
     private Executor() {}
 
-    static String formatRow(Row row, List<UsersColumn> projection) {
+    static String formatRow(Row row, List<Integer> projection) {
         StringJoiner out = new StringJoiner(", ", "( ", " )");
-        for(UsersColumn col : projection){
-            out.add(String.valueOf(col.valueIn(row)));
+        for (int col : projection) {
+            out.add(String.valueOf(row.get(col)));
         }
         return out.toString();
     }
 
-    public static void execute(Statement statement, Table table) throws ExecuteException {
+    public static void execute(Statement statement, Database db) throws ExecuteException {
         switch (statement.type()) {
+            case CREATE_TABLE:
+                db.createTable(statement.schema(), statement.sql());
+                break;
             case INSERT:
-                table.insert(statement.row());
+                BTree tree = db.table(statement.table());
+                if (tree == null) {
+                    throw new ExecuteException("Table '" + statement.table() + "' does not exist");
+                }
+                tree.insert(statement.row());
                 break;
             case SELECT:
                 try {
-                    select(statement, table);
+                    select(statement, db.table(statement.table()));
                 } catch (IOException e) {
                     throw new ExecuteException("Select failed: " + e.getMessage());
                 }
@@ -35,26 +41,31 @@ public final class Executor {
         }
     }
 
-    private static void select(Statement s, Table table) throws IOException {
+    private static void select(Statement s, BTree tree) throws IOException {
         Statement.Filter f = s.filter();
 
-        if (f != null && f.column() == UsersColumn.ID) {
+        if(f != null && f.column() == 0){
             int key = (Integer) f.value();
-            Cursor c = table.find(key);
+            Cursor c = tree.find(key);
             if(!c.isEndOfTable()){
                 Row row = c.read();
-                if(row.id() == key){
+                if(row.key() == key){
                     System.out.println(formatRow(row, s.projection()));
                 }
             }
             return;
         }
 
-        for(Cursor c = Cursor.atStart(table); !c.isEndOfTable(); c.advance()){
+        for(Cursor c = Cursor.atStart(tree); !c.isEndOfTable(); c.advance()){
             Row row = c.read();
-            if(f == null || Objects.equals(f.column().valueIn(row), f.value())){
+            if(matches(row, f)){
                 System.out.println(formatRow(row, s.projection()));
             }
         }
+    }
+
+    @SuppressWarnings("unused")
+    private static boolean matches(Row row, Statement.Filter f) {
+        return f == null || Objects.equals(row.get(f.column()), f.value());
     }
 }

@@ -23,4 +23,8 @@ public final class Ast {
     public record Where(Name column, Literal value) {}
 
     public record Select(List<Name> columns, Name table, Where where) implements Stmt {}
+
+    public record ColumnDef(Name name, Name type, IntLiteral size) {}
+
+    public record CreateTable(Name table, List<ColumnDef> columns) implements Stmt {}
 }

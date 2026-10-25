@@ -1,11 +1,10 @@
 package db;
 
-
 public final class Parser {
 
     private Parser() {}
 
-    public static Statement prepare(String line) throws PrepareException {
-        return Binder.bind(SqlParser.parse(Lexer.tokenize(line)));
+    public static Statement prepare(String line, Database db) throws PrepareException {
+        return Binder.bind(SqlParser.parse(Lexer.tokenize(line)), db, line);
     }
 }

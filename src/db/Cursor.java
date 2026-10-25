@@ -5,21 +5,21 @@ import java.nio.ByteBuffer;
 
 public class Cursor {
 
-    private final Table table;
-    private int pageNum;        
+    private final BTree tree;         
+    private int pageNum;
     private int cellNum;
     private boolean endOfTable;
 
-    Cursor(Table table, int pageNum, int cellNum) throws IOException {
-        this.table = table;
+    Cursor(BTree tree, int pageNum, int cellNum) throws IOException {
+        this.tree = tree;
         this.pageNum = pageNum;
         this.cellNum = cellNum;
-        ByteBuffer page = table.pager().getPage(pageNum);
+        ByteBuffer page = tree.pager().getPage(pageNum);
         this.endOfTable = cellNum >= LeafNode.numCells(page);
     }
 
-    public static Cursor atStart(Table table) throws IOException {
-        return table.find(Integer.MIN_VALUE); 
+    public static Cursor atStart(BTree tree) throws IOException {
+        return tree.find(Integer.MIN_VALUE);
     }
 
     public boolean isEndOfTable() {
@@ -28,12 +28,12 @@ public class Cursor {
 
     public void advance() throws IOException {
         cellNum++;
-        ByteBuffer page = table.pager().getPage(pageNum);
+        ByteBuffer page = tree.pager().getPage(pageNum);
         if (cellNum >= LeafNode.numCells(page)) {
             int next = LeafNode.nextLeaf(page);
-            if(next == 0){
+            if (next == 0) {
                 endOfTable = true;
-            }else{
+            } else {
                 pageNum = next;
                 cellNum = 0;
             }
@@ -49,7 +49,7 @@ public class Cursor {
     }
 
     public Row read() throws IOException {
-        ByteBuffer page = table.pager().getPage(pageNum);
-        return RowLayout.deserialize(page, LeafNode.valueOffset(cellNum));
+        ByteBuffer page = tree.pager().getPage(pageNum);
+        return RecordCodec.decode(tree.schema(), page, SlottedLeaf.recordOffset(page, cellNum));
     }
 }

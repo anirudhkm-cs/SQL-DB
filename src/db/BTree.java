@@ -2,67 +2,40 @@ package db;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 
-
-public class Table implements AutoCloseable {
-
-    // ---- File header (page 0) ----
-    static final int MAGIC = 0x4A444233;            
-    static final int HEADER_MAGIC_OFFSET = 0;
-    static final int HEADER_ROOT_PAGE_OFFSET = 4;
-    static final int ROOT_PAGE = 1;
+public class BTree {
 
     private final Pager pager;
-    private int rootPageNum;
+    private final String name;
+    private final int rootPageNum;
+    private final Schema schema;
 
     private final Set<Integer> dirty = new LinkedHashSet<>();
 
-    public Table(Path path) throws IOException {
-        this.pager = new Pager(path);
+    public BTree(Pager pager, String name, int rootPageNum, Schema schema) {
+        this.pager = pager;
+        this.name = name;
+        this.rootPageNum = rootPageNum;
+        this.schema = schema;
+    }
 
-        if (pager.numPages() == 0) {
-            ByteBuffer root = pager.getPage(ROOT_PAGE);
-            LeafNode.initialize(root);
-            LeafNode.setRoot(root, true);
+    static void initializeEmptyRoot(Pager pager, int pageNum) throws IOException {
+        ByteBuffer root = pager.getPage(pageNum);
+        SlottedLeaf.initialize(root);                 
+        LeafNode.setRoot(root, true);
+    }
 
-            ByteBuffer header = pager.getPage(0);
-            header.putInt(HEADER_MAGIC_OFFSET, MAGIC);
-            header.putInt(HEADER_ROOT_PAGE_OFFSET, ROOT_PAGE);
-            this.rootPageNum = ROOT_PAGE;
+    String name() {
+        return name;
+    }
 
-            pager.flushPage(ROOT_PAGE);
-            pager.sync();
-            pager.flushPage(0);
-            pager.sync();
-        } else {
-            ByteBuffer header = pager.getPage(0);
-            if (header.getInt(HEADER_MAGIC_OFFSET) != MAGIC) {
-                pager.close();
-                throw new IOException("Not a valid database file");
-            }
-            int root = header.getInt(HEADER_ROOT_PAGE_OFFSET);
-            if (root < 1 || root >= pager.numPages()) {
-                pager.close();
-                throw new IOException("Corrupt database: root page " + root + " out of range");
-            }
-            ByteBuffer rootPage = pager.getPage(root);
-            byte type = rootPage.get(LeafNode.NODE_TYPE_OFFSET);
-            if (type != LeafNode.TYPE_LEAF && type != LeafNode.TYPE_INTERNAL) {
-                pager.close();
-                throw new IOException("Corrupt database: root page " + root
-                        + " has unknown node type " + type);
-            }
-            if (!LeafNode.isRoot(rootPage)) {
-                pager.close();
-                throw new IOException("Corrupt database: root page " + root + " is not marked as root");
-            }
-            this.rootPageNum = root;
-        }
+    Schema schema() {
+        return schema;
     }
 
     Pager pager() {
@@ -89,7 +62,7 @@ public class Table implements AutoCloseable {
         int high = LeafNode.numCells(leaf);
         while (low < high) {
             int mid = (low + high) >>> 1;
-            int midKey = LeafNode.key(leaf, mid);
+            int midKey = SlottedLeaf.key(leaf, mid);
             if (midKey == key) {
                 return new Cursor(this, pageNum, mid);
             } else if (midKey < key) {
@@ -105,25 +78,26 @@ public class Table implements AutoCloseable {
     int subtreeMaxKey(int pageNum) throws IOException {
         ByteBuffer page = pager.getPage(pageNum);
         if(LeafNode.isLeaf(page)){
-            return LeafNode.maxKey(page);
+            return SlottedLeaf.maxKey(page);
         }
         return subtreeMaxKey(InternalNode.rightChild(page));
     }
 
     public void insert(Row row) throws ExecuteException {
         try {
-            Cursor c = find(row.id());
+            Cursor c = find(row.key());         
             ByteBuffer page = pager.getPage(c.pageNum());
             int numCells = LeafNode.numCells(page);
 
-            if (c.cellNum() < numCells && LeafNode.key(page, c.cellNum()) == row.id()) {
+            if (c.cellNum() < numCells && SlottedLeaf.key(page, c.cellNum()) == row.key()) {
                 throw new ExecuteException("Duplicate key");
             }
 
-            if (numCells >= LeafNode.MAX_CELLS) {
-                splitAndInsert(c, row);
+            byte[] cell = SlottedLeaf.makeCell(row.key(), RecordCodec.encode(row));
+            if (!SlottedLeaf.hasRoomFor(page, cell.length)) {
+                splitAndInsert(c, cell);
             } else {
-                LeafNode.insertCell(page, c.cellNum(), row.id(), row);
+                SlottedLeaf.insertCell(page, c.cellNum(), cell);
                 markDirty(c.pageNum());
             }
             flushDirty();
@@ -139,44 +113,66 @@ public class Table implements AutoCloseable {
 
     private void flushDirty() throws IOException {
         for (int pageNum: dirty){
-            if(pageNum!=ROOT_PAGE){
+            if(pageNum!=rootPageNum){     
                 pager.flushPage(pageNum);
             }
         }
         pager.sync();
-        if(dirty.contains(ROOT_PAGE)){
-            pager.flushPage(ROOT_PAGE);
+        if(dirty.contains(rootPageNum)){
+            pager.flushPage(rootPageNum);
             pager.sync();
         }
         dirty.clear();
     }
 
-    private void splitAndInsert(Cursor c, Row row) throws IOException {
+    private void splitAndInsert(Cursor c, byte[] cell) throws IOException {
         int oldPageNum = c.pageNum();
         ByteBuffer oldLeaf = pager.getPage(oldPageNum);
 
-        int oldMaxKey = LeafNode.maxKey(oldLeaf);
+        int oldMaxKey = SlottedLeaf.maxKey(oldLeaf);
         boolean wasRoot = LeafNode.isRoot(oldLeaf);
         int parentPage = LeafNode.parent(oldLeaf);
 
         int newPageNum = pager.allocatePage();
         ByteBuffer newLeaf = pager.getPage(newPageNum);
-        LeafNode.initialize(newLeaf);
+        SlottedLeaf.initialize(newLeaf);                  
         LeafNode.setParent(newLeaf, parentPage);
 
-        for (int i = LeafNode.MAX_CELLS; i >= 0; i--) {
-            ByteBuffer dest = i >= LeafNode.LEFT_SPLIT_COUNT ? newLeaf : oldLeaf;
-            int idx = i % LeafNode.LEFT_SPLIT_COUNT;
-            if (i == c.cellNum()) {
-                LeafNode.writeCell(dest, idx, row.id(), row);
-            } else if (i > c.cellNum()) {
-                LeafNode.copyCell(oldLeaf, i - 1, dest, idx);
+        int n = LeafNode.numCells(oldLeaf);
+        List<byte[]> cells = new ArrayList<>(n + 1);
+        for (int i = 0; i < n; i++) {
+            cells.add(SlottedLeaf.cellBytes(oldLeaf, i));
+        }
+        cells.add(c.cellNum(), cell);
+
+        int total = 0;
+        for (byte[] x : cells) {
+            total += x.length + SlottedLeaf.POINTER_SIZE;
+        }
+
+        List<byte[]> left = new ArrayList<>();
+        List<byte[]> right = new ArrayList<>();
+        int leftCost = 0;
+        int rightCost = 0;
+        for (byte[] x : cells) {
+            int cost = x.length + SlottedLeaf.POINTER_SIZE;
+            if (leftCost < total / 2) {
+                left.add(x);
+                leftCost += cost;
             } else {
-                LeafNode.copyCell(oldLeaf, i, dest, idx);
+                right.add(x);
+                rightCost += cost;
             }
         }
-        LeafNode.setNumCells(oldLeaf, LeafNode.LEFT_SPLIT_COUNT);
-        LeafNode.setNumCells(newLeaf, LeafNode.RIGHT_SPLIT_COUNT);
+
+        if (left.isEmpty() || right.isEmpty()
+                || leftCost > SlottedLeaf.USABLE_SPACE || rightCost > SlottedLeaf.USABLE_SPACE) {
+            throw new IllegalStateException("bad leaf split: left=" + leftCost + " right=" + rightCost
+                    + " total=" + total + " usable=" + SlottedLeaf.USABLE_SPACE);
+        }
+
+        SlottedLeaf.rebuild(oldLeaf, left);
+        SlottedLeaf.rebuild(newLeaf, right);
 
         LeafNode.setNextLeaf(newLeaf, LeafNode.nextLeaf(oldLeaf));
         LeafNode.setNextLeaf(oldLeaf, newPageNum);
@@ -308,7 +304,7 @@ public class Table implements AutoCloseable {
     }
 
     private int createNewRoot(int rightChildPage) throws IOException {
-        ByteBuffer root = pager.getPage(ROOT_PAGE);
+        ByteBuffer root = pager.getPage(rootPageNum);
         ByteBuffer right = pager.getPage(rightChildPage);
 
         int leftChildPage = pager.allocatePage();
@@ -316,8 +312,8 @@ public class Table implements AutoCloseable {
         System.arraycopy(root.array(), 0, left.array(), 0, Pager.PAGE_SIZE);
 
         LeafNode.setRoot(left, false);
-        LeafNode.setParent(left, ROOT_PAGE);
-        LeafNode.setParent(right, ROOT_PAGE);
+        LeafNode.setParent(left, rootPageNum);
+        LeafNode.setParent(right, rootPageNum);
 
         if(!LeafNode.isLeaf(left)){
             int n = InternalNode.numKeys(left);
@@ -336,7 +332,7 @@ public class Table implements AutoCloseable {
         InternalNode.setKey(root, 0, subtreeMaxKey(leftChildPage));
         InternalNode.setRightChild(root, rightChildPage);
 
-        markDirty(ROOT_PAGE);
+        markDirty(rootPageNum);
         markDirty(leftChildPage);
         markDirty(rightChildPage);
         return leftChildPage;
@@ -367,7 +363,7 @@ public class Table implements AutoCloseable {
             ByteBuffer page = pager.getPage(pageNum);
             int n = LeafNode.numCells(page);
             for(int c=0; c<n; c++){
-                int k = LeafNode.key(page, c);
+                int k = SlottedLeaf.key(page, c);
                 if(havePrev && k<=prevKey){
                     return "leaf chain: key " + k + " in leaf " + pageNum + " is not greater than previous key " + prevKey;
                 }
@@ -395,9 +391,34 @@ public class Table implements AutoCloseable {
         }
         if (LeafNode.isLeaf(page)) {
             int n = LeafNode.numCells(page);
+
+            int contentStart = SlottedLeaf.contentStart(page);
+            int pointerEnd = SlottedLeaf.HEADER_SIZE + n * SlottedLeaf.POINTER_SIZE;
+            if(contentStart < pointerEnd || contentStart > Pager.PAGE_SIZE){
+                return "leaf " + pageNum + ": contentStart " + contentStart + " outside [" + pointerEnd + ", " + Pager.PAGE_SIZE + "]";
+            }
+            int[][] spans = new int[n][];
+            for(int i=0; i<n; i++){
+                int start = SlottedLeaf.cellStart(page, i);
+                if(start < contentStart || start + SlottedLeaf.CELL_HEADER_SIZE > Pager.PAGE_SIZE){
+                    return "leaf " + pageNum + ": cell " + i + " starts at " + start + ", outside [" + contentStart + ", " + Pager.PAGE_SIZE + ")";
+                }
+                int end = start + SlottedLeaf.cellLength(page, i);
+                if(end > Pager.PAGE_SIZE){
+                    return "leaf " + pageNum + ": cell " + i + " runs to " + end + ", past end of page";
+                }
+                spans[i] = new int[]{start, end, i};
+            }
+            Arrays.sort(spans, (a, b) -> Integer.compare(a[0], b[0]));
+            for(int k=1; k<n; k++){
+                if(spans[k-1][1] > spans[k][0]){
+                    return "leaf " + pageNum + ": cells " + spans[k-1][2] + " and " + spans[k][2] + " overlap";
+                }
+            }
+
             for(int i=1; i<n; i++){
-                if(LeafNode.key(page, i-1) >= LeafNode.key(page, i)){
-                    return "leaf " + pageNum + ": keys not increasing at cell " + i + " (" + LeafNode.key(page, i - 1) + ", " + LeafNode.key(page, i) + ")";
+                if(SlottedLeaf.key(page, i-1) >= SlottedLeaf.key(page, i)){
+                    return "leaf " + pageNum + ": keys not increasing at cell " + i + " (" + SlottedLeaf.key(page, i - 1) + ", " + SlottedLeaf.key(page, i) + ")";
                 }
             }
             if(leafDepth[0] == -1){
@@ -434,6 +455,22 @@ public class Table implements AutoCloseable {
         return null;
     }
 
+    void collectPages(List<Integer> out) throws IOException {
+        collectPages(rootPageNum, out);
+    }
+
+    private void collectPages(int pageNum, List<Integer> out) throws IOException {
+        out.add(pageNum);
+        ByteBuffer page = pager.getPage(pageNum);
+        if (LeafNode.isLeaf(page)) {
+            return;
+        }
+        int n = InternalNode.numKeys(page);
+        for (int i = 0; i <= n; i++) {
+            collectPages(InternalNode.child(page, i), out);
+        }
+    }
+
     public void printTree() throws IOException {
         printNode(rootPageNum, 0);
     }
@@ -446,7 +483,7 @@ public class Table implements AutoCloseable {
             int n = LeafNode.numCells(page);
             System.out.println(indent + "- leaf (size " + n + ")");
             for (int i = 0; i < n; i++) {
-                System.out.println(indent + "  - " + LeafNode.key(page, i));
+                System.out.println(indent + "  - " + SlottedLeaf.key(page, i));
             }
         } else {
             int n = InternalNode.numKeys(page);
@@ -457,10 +494,5 @@ public class Table implements AutoCloseable {
             }
             printNode(InternalNode.rightChild(page), indentLevel + 1);
         }
-    }
-
-    @Override
-    public void close() throws IOException {
-        pager.close();
     }
 }
