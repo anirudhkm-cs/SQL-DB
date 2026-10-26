@@ -33,11 +33,18 @@ public class Database implements AutoCloseable {
     private final Map<String, String> sqlByTable = new TreeMap<>();
     private int nextCatalogId = 1;
 
+    private boolean inTransaction = false;
+
+    @FunctionalInterface
+    interface Work {
+        void run() throws IOException, ExecuteException;
+    }
+
     public Database(Path path) throws IOException {
         this.pager = new Pager(path);
         try {
             if (pager.numPages() == 0) {
-                BTree.initializeEmptyRoot(pager, CATALOG_ROOT); 
+                BTree.initializeEmptyRoot(pager, CATALOG_ROOT);   
                 ByteBuffer header = pager.getPage(0);
                 header.putInt(HEADER_MAGIC_OFFSET, MAGIC);
                 header.putInt(HEADER_CATALOG_ROOT_OFFSET, CATALOG_ROOT);
@@ -68,6 +75,8 @@ public class Database implements AutoCloseable {
     }
 
     private void loadCatalog() throws IOException {
+        tables.clear();
+        sqlByTable.clear();
         int maxId = 0;
         for(Cursor c = Cursor.atStart(catalog); !c.isEndOfTable(); c.advance()){
             Row row = c.read();
@@ -126,7 +135,11 @@ public class Database implements AutoCloseable {
         return sqlByTable.get(name.toLowerCase());
     }
 
-    
+
+    String pageStats() throws IOException {
+        return pager.numPages() + " pages in the file, " + pager.freeList().size() + " on the free list";
+    }
+
     String checkPages() throws IOException {
         int numPages = pager.numPages();
         String[] owner = new String[numPages];
@@ -150,6 +163,23 @@ public class Database implements AutoCloseable {
             }
         }
 
+       
+        List<Integer> free;
+        try {
+            free = pager.freeList();
+        } catch (IllegalStateException e) {
+            return e.getMessage();
+        }
+        for (int p : free) {
+            if (owner[p] != null) {
+                return "page " + p + " is on the free list but used by " + owner[p];
+            }
+            if (pager.getPage(p).get(0) != Pager.TYPE_FREE) {
+                return "free list: page " + p + " is not marked free";
+            }
+            owner[p] = "free list";
+        }
+
         List<Integer> orphans = new ArrayList<>();
         for (int p = 1; p < numPages; p++) {
             if (owner[p] == null) orphans.add(p);
@@ -160,23 +190,78 @@ public class Database implements AutoCloseable {
         return null;
     }
 
-    public void createTable(Schema schema, String sql) throws ExecuteException {
+    public void createTable(Schema schema, String sql) throws IOException, ExecuteException {
         String key = schema.tableName().toLowerCase();
         if (tables.containsKey(key)) {
             throw new ExecuteException("Table '" + schema.tableName() + "' already exists");
         }
+        int rootPage = pager.allocatePage();
+        BTree.initializeEmptyRoot(pager, rootPage);
+        int id = nextCatalogId;
+        catalog.insert(new Row(List.of(id, schema.tableName(), rootPage, sql)));
+        tables.put(key, new BTree(pager, schema.tableName(), rootPage, schema));
+        sqlByTable.put(key, sql);
+        nextCatalogId = id + 1;
+    }
+
+    public boolean inTransaction() {
+        return inTransaction;
+    }
+
+    public void begin() throws ExecuteException {
+       if(inTransaction){
+        throw new ExecuteException("Already in a transaction");
+       }
+       inTransaction = true;
+    }
+
+    public void commit() throws ExecuteException {
+        if(!inTransaction){
+            throw new ExecuteException("no active transaction");
+        }
+        inTransaction = false;
+        commitOrDiscard();
+    }
+
+    public void rollback() throws ExecuteException {
+        if(!inTransaction){
+            throw new ExecuteException("no active transaction");
+        }
+        inTransaction = false;
+        discard();
+    }
+
+    void runStatement(Work work) throws ExecuteException {
         try {
-            int rootPage = pager.allocatePage();
-            BTree.initializeEmptyRoot(pager, rootPage); 
-
-            int id = nextCatalogId;
-            catalog.insert(new Row(List.of(id, schema.tableName(), rootPage, sql)));
-
-            tables.put(key, new BTree(pager, schema.tableName(), rootPage, schema));
-            sqlByTable.put(key, sql);
-            nextCatalogId = id+1;
+            work.run();
+        } catch (ExecuteException e) {
+           throw e;
+        } catch(IOException | RuntimeException e){
+            boolean wasExplicit = inTransaction;
+            inTransaction = false;
+            discard();
+            throw new ExecuteException("Statement failed: " + e.getMessage()+ (wasExplicit ? " - transaction rolled back" : ""));
+        }
+        if(!inTransaction){
+            commitOrDiscard();
+        }
+    }
+    
+    private void commitOrDiscard() throws ExecuteException {
+        try {
+            pager.commit();
         } catch (IOException e) {
-            throw new ExecuteException("CREATE TABLE failed: " + e.getMessage());
+            discard();
+            throw new ExecuteException("COMMIT failed, transaction rolled back: " + e.getMessage());
+        }
+    }
+
+    private void discard() throws ExecuteException {
+        pager.abort();
+        try {
+            loadCatalog();
+        } catch (IOException e) {
+            throw new ExecuteException("Rollback could not reload the catalog: " + e.getMessage());
         }
     }
 

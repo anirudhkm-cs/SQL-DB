@@ -33,4 +33,10 @@ public final class Ast {
     public record Assignment(Name column, Literal value) {}
 
     public record Update(Name table, List<Assignment> assignments, Where where) implements Stmt {}
+
+    public record Begin() implements Stmt {}
+
+    public record Commit() implements Stmt {}
+
+    public record Rollback() implements Stmt {}
 }

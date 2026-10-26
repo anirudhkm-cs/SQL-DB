@@ -8,11 +8,14 @@ import java.util.List;
 
 public class Main {
 
-    private static void printPrompt() {
-        System.out.print("db > ");
+    private static void printPrompt(Database db) {
+        System.out.print(db.inTransaction() ? "db*> " : "db > ");
     }
 
     private static void exit(Database db) throws IOException {
+        if (db.inTransaction()) {
+            System.out.println("Open transaction discarded (it was never committed)");
+        }
         db.close();
         System.exit(0);
     }
@@ -35,7 +38,7 @@ public class Main {
             exit(db);
             return true;
         }
-        if (cmd.equals(".crash")) {                                   // 8a: testing only
+        if (cmd.equals(".crash")) {                                  
             if (arg == null) {
                 System.out.println("Usage: .crash <point>   points: " + CrashPoints.POINTS);
                 return true;
@@ -46,6 +49,10 @@ public class Main {
             } catch (IllegalArgumentException e) {
                 System.out.println(e.getMessage());
             }
+            return true;
+        }
+        if (cmd.equals(".pages")) {                                   
+            System.out.println(db.pageStats());
             return true;
         }
         if (cmd.equals(".tables")) {
@@ -132,7 +139,7 @@ public class Main {
         BufferedReader in = new BufferedReader(new InputStreamReader(System.in));
 
         while (true) {
-            printPrompt();
+            printPrompt(db);
 
             String line = readInput(in, db);
 

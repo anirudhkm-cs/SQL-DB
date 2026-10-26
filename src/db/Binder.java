@@ -14,6 +14,9 @@ public final class Binder {
         if (stmt instanceof Ast.CreateTable create) return bindCreate(create, db, sql);
         if (stmt instanceof Ast.Delete delete) return bindDelete(delete, db);          
         if (stmt instanceof Ast.Update update) return bindUpdate(update, db);          
+        if (stmt instanceof Ast.Begin) return Statement.transaction(StatementType.BEGIN);        
+        if (stmt instanceof Ast.Commit) return Statement.transaction(StatementType.COMMIT);      
+        if (stmt instanceof Ast.Rollback) return Statement.transaction(StatementType.ROLLBACK);  
         throw new IllegalStateException("unknown statement " + stmt);
     }
 

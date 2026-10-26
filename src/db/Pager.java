@@ -6,7 +6,10 @@ import java.nio.channels.FileChannel;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Set;
 import java.util.TreeSet;
 
@@ -14,6 +17,10 @@ import java.util.TreeSet;
 public final class Pager implements AutoCloseable {
 
     public static final int PAGE_SIZE = 4096;
+
+    static final int HEADER_FREE_LIST_OFFSET = 8;
+    static final byte TYPE_FREE = 2;            
+    static final int FREE_NEXT_OFFSET = 4;
 
     private final FileChannel channel;
     private final Wal wal;
@@ -49,8 +56,51 @@ public final class Pager implements AutoCloseable {
     }
 
     public int allocatePage() throws IOException {
-        getPage(numPages);
-        return numPages - 1;
+        ByteBuffer header = getPage(0);
+        int head = header.getInt(HEADER_FREE_LIST_OFFSET);
+        if(head == 0){
+            getPage(numPages);
+            return numPages-1;
+        }
+
+        ByteBuffer page = getPage(head);
+        if(page.get(0) != TYPE_FREE){
+            throw new IllegalStateException("free list head " + head + " is not a free page");
+        }
+        header.putInt(HEADER_FREE_LIST_OFFSET, page.getInt(FREE_NEXT_OFFSET));
+        Arrays.fill(page.array(), (byte) 0);
+        markDirty(0);
+        markDirty(head);
+        return head;
+    }
+
+    public void freePage(int n) throws IOException {
+        if(n <= 0 || n>= numPages){
+            throw new IllegalArgumentException("cannot free page " + n);
+        }
+        ByteBuffer header = getPage(0);
+        ByteBuffer page = getPage(n);
+
+        Arrays.fill(page.array(), (byte)0);
+        page.put(0, TYPE_FREE);
+        page.putInt(FREE_NEXT_OFFSET, header.getInt(HEADER_FREE_LIST_OFFSET));
+        header.putInt(HEADER_FREE_LIST_OFFSET, n); 
+
+        markDirty(0);
+        markDirty(n);
+    }
+
+    List<Integer> freeList() throws IOException {
+        List<Integer> out = new ArrayList<>();
+        int p = getPage(0).getInt(HEADER_FREE_LIST_OFFSET);
+        while (p != 0) {
+            if (p < 0 || p >= numPages || out.size() > numPages) {
+                throw new IllegalStateException("free list: bad page " + p + " after " + out);
+            }
+            out.add(p);
+            p = getPage(p).getInt(FREE_NEXT_OFFSET);
+        }
+        return out;
     }
 
     public ByteBuffer getPage(int n) throws IOException {

@@ -62,8 +62,14 @@ public final class SqlParser {
             stmt = parseDelete();
         }else if(check(TokenType.UPDATE)){            
             stmt = parseUpdate();
+        }else if(match(TokenType.BEGIN)){             
+            stmt = new Ast.Begin();
+        }else if(match(TokenType.COMMIT)){            
+            stmt = new Ast.Commit();
+        }else if(match(TokenType.ROLLBACK)){          
+            stmt = new Ast.Rollback();
         }else{
-            throw error("expected INSERT, SELECT, CREATE, UPDATE or DELETE");
+            throw error("expected INSERT, SELECT, CREATE, UPDATE, DELETE, BEGIN, COMMIT or ROLLBACK");
         }
         match(TokenType.SEMICOLON);
         expect(TokenType.EOF, "end of input");

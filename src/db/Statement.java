@@ -2,8 +2,7 @@ package db;
 
 import java.util.List;
 
-public record Statement(StatementType type, String table, Row row, List<Integer> projection,
-                        Filter filter, Schema schema, String sql, List<Assignment> assignments) {
+public record Statement(StatementType type, String table, Row row, List<Integer> projection, Filter filter, Schema schema, String sql, List<Assignment> assignments) {
 
     public record Filter(int column, Object value) {}
     
@@ -21,11 +20,15 @@ public record Statement(StatementType type, String table, Row row, List<Integer>
         return new Statement(StatementType.CREATE_TABLE, schema.tableName(), null, null, null, schema, sql, null);
     }
 
-    public static Statement delete(String table, Filter filter) {                                   // 7a
+    public static Statement delete(String table, Filter filter) {                                   
         return new Statement(StatementType.DELETE, table, null, null, filter, null, null, null);
     }
 
-    public static Statement update(String table, List<Assignment> assignments, Filter filter) {     // 7a
+    public static Statement update(String table, List<Assignment> assignments, Filter filter) {     
         return new Statement(StatementType.UPDATE, table, null, null, filter, null, null, List.copyOf(assignments));
+    }
+
+    public static Statement transaction(StatementType type) {
+        return new Statement(type, null, null, null, null, null, null, null);
     }
 }

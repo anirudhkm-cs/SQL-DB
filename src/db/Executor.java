@@ -20,31 +20,21 @@ public final class Executor {
 
     public static void execute(Statement statement, Database db) throws ExecuteException {
         switch (statement.type()) {
-            case CREATE_TABLE:
-                db.createTable(statement.schema(), statement.sql());
-                break;
-            case INSERT:
-                BTree tree = db.table(statement.table());
-                if (tree == null) {
-                    throw new ExecuteException("Table '" + statement.table() + "' does not exist");
-                }
-                tree.insert(statement.row());
-                break;
-            case SELECT:
-                try {
-                    select(statement, db.table(statement.table()));
-                } catch (IOException e) {
-                    throw new ExecuteException("Select failed: " + e.getMessage());
-                }
-                break;
-            case DELETE:                                                    // 7a
-                delete(statement, db.table(statement.table()));
-                break;
-            case UPDATE:                                                    // 7a
-                update(statement, db.table(statement.table()));
-                break;
-            default:
-                break;
+            case BEGIN -> db.begin();
+            case COMMIT -> db.commit();
+            case ROLLBACK -> db.rollback();
+            default -> db.runStatement(() -> executeData(statement, db));
+        }
+    }
+
+    private static void executeData(Statement statement, Database db) throws IOException, ExecuteException {
+        switch (statement.type()) {
+            case CREATE_TABLE -> db.createTable(statement.schema(), statement.sql());
+            case INSERT -> db.table(statement.table()).insert(statement.row());
+            case SELECT -> select(statement, db.table(statement.table()));
+            case DELETE -> delete(statement, db.table(statement.table()));
+            case UPDATE -> update(statement, db.table(statement.table()));
+            default -> throw new IllegalStateException("not a data statement: " + statement.type());
         }
     }
 
@@ -94,13 +84,8 @@ public final class Executor {
         return out;
     }
 
-    private static void delete(Statement s, BTree tree) throws ExecuteException {
-        List<Row> rows;
-        try {
-            rows = matchingRows(s.filter(), tree);
-        } catch (IOException e) {
-            throw new ExecuteException("Delete failed: " + e.getMessage());
-        }
+    private static void delete(Statement s, BTree tree) throws IOException, ExecuteException {
+        List<Row> rows = matchingRows(s.filter(), tree);
         
         int count = 0;
         for(Row row: rows){
@@ -111,19 +96,14 @@ public final class Executor {
         System.out.println(count + (count == 1 ? " row deleted" : " rows deleted"));
     }
 
-    private static void update(Statement s, BTree tree) throws ExecuteException {
+    private static void update(Statement s, BTree tree) throws IOException, ExecuteException {
         for (Statement.Assignment a : s.assignments()) {
             if (a.column() == 0) {
                 throw new ExecuteException("Cannot update the key column");
             }
         }
 
-        List<Row> rows;
-        try {
-            rows = matchingRows(s.filter(), tree);
-        } catch (IOException e) {
-            throw new ExecuteException("Update failed: " + e.getMessage());
-        }
+        List<Row> rows = matchingRows(s.filter(), tree);
 
         int count = 0;
         for (Row row : rows) {

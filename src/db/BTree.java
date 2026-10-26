@@ -25,7 +25,7 @@ public class BTree {
         ByteBuffer root = pager.getPage(pageNum);
         SlottedLeaf.initialize(root);                 
         LeafNode.setRoot(root, true);
-        pager.markDirty(pageNum);                     
+        pager.markDirty(pageNum);                  
     }
 
     String name() {
@@ -99,23 +99,17 @@ public class BTree {
         return null;
     }
 
-    public void insert(Row row) throws ExecuteException {
-        try {
-            Cursor c = find(row.key());
-            ByteBuffer page = pager.getPage(c.pageNum());
-            int numCells = LeafNode.numCells(page);
+    public void insert(Row row) throws IOException,ExecuteException {
+        Cursor c = find(row.key());
+        ByteBuffer page = pager.getPage(c.pageNum());
+        int numCells = LeafNode.numCells(page);
 
-            if (c.cellNum() < numCells && SlottedLeaf.key(page, c.cellNum()) == row.key()) {
-                throw new ExecuteException("Duplicate key");
-            }
-
-            byte[] cell = SlottedLeaf.makeCell(row.key(), RecordCodec.encode(row));
-            insertCellAt(c, cell);                 
-            flushDirty();
-        } catch (IOException e) {
-            pager.abort();                       
-            throw new ExecuteException("Insert failed: " + e.getMessage());
+        if (c.cellNum() < numCells && SlottedLeaf.key(page, c.cellNum()) == row.key()) {
+            throw new ExecuteException("Duplicate key");
         }
+
+        byte[] cell = SlottedLeaf.makeCell(row.key(), RecordCodec.encode(row));
+        insertCellAt(c, cell);  
     }
 
     private void insertCellAt(Cursor c, byte[] cell) throws IOException {
@@ -134,8 +128,7 @@ public class BTree {
         splitAndInsert(c, cell);
     }
 
-    public boolean delete(int key) throws ExecuteException {
-        try {
+    public boolean delete(int key) throws IOException, ExecuteException {
             Cursor c = find(key);
             ByteBuffer page = pager.getPage(c.pageNum());
             if (c.cellNum() >= LeafNode.numCells(page)
@@ -145,44 +138,216 @@ public class BTree {
 
             SlottedLeaf.removeCell(page, c.cellNum());
             markDirty(c.pageNum());
-            flushDirty();
-        return true;
-        } catch (IOException e) {
-            pager.abort();                      
-            throw new ExecuteException("Delete failed: " + e.getMessage());
-        }
-    }
-
-    public boolean update(Row row) throws ExecuteException {
-        try {
-            Cursor c = find(row.key());
-            ByteBuffer page = pager.getPage(c.pageNum());
-
-            if (c.cellNum() >= LeafNode.numCells(page)
-                    || SlottedLeaf.key(page, c.cellNum()) != row.key()) {
-                return false;
+            if (!LeafNode.isRoot(page) && usedBytes(page) < MIN_LEAF_BYTES) {
+                rebalance(c.pageNum());
             }
-
-            SlottedLeaf.removeCell(page, c.cellNum());
-            markDirty(c.pageNum());
-
-            byte[] cell = SlottedLeaf.makeCell(row.key(), RecordCodec.encode(row));
-            insertCellAt(c, cell);
-
-            flushDirty();
             return true;
-        } catch (IOException e) {
-            pager.abort();                     
-            throw new ExecuteException("Update failed: " + e.getMessage());
+    }
+
+    static final int MIN_LEAF_BYTES = SlottedLeaf.USABLE_SPACE / 4;
+    static final int MIN_KEYS = Math.max(1, InternalNode.MAX_KEYS / 4);
+
+    static int usedBytes(ByteBuffer leaf) {
+        return SlottedLeaf.USABLE_SPACE - SlottedLeaf.totalFree(leaf);
+    }
+
+    private void rebalance(int pageNum) throws IOException {
+        ByteBuffer node = pager.getPage(pageNum);
+        int parentPage = LeafNode.parent(node);
+        ByteBuffer parent = pager.getPage(parentPage);
+
+        int i = indexOfChild(parent, pageNum);
+        if(i<0){
+            throw new IllegalStateException("parent " + parentPage + " has no entry for child " + pageNum);
+        }
+        int leftIdx = i < InternalNode.numKeys(parent) ? i : i-1;
+        int leftPage = InternalNode.child(parent, leftIdx);
+        int rightPage = InternalNode.child(parent, leftIdx+1);
+
+        boolean merged = LeafNode.isLeaf(node) ? rebalanceLeaves(parentPage, leftIdx, leftPage, rightPage) : rebalanceInternals(parentPage, leftIdx, leftPage, rightPage);
+        if(!merged){
+            return;
+        }
+
+        removeFromParent(parentPage, leftIdx);
+        pager.freePage(rightPage);
+
+        parent = pager.getPage(parentPage);
+        if(LeafNode.isRoot(parent)){
+            if(InternalNode.numKeys(parent) == 0){
+                collapseRoot();
+            }
+        }else if(InternalNode.numKeys(parent) < MIN_KEYS){
+            rebalance(parentPage);
         }
     }
 
+    private boolean rebalanceLeaves(int parentPage, int leftIdx, int leftPage, int rightPage) throws IOException {
+        ByteBuffer left = pager.getPage(leftPage);
+        ByteBuffer right = pager.getPage(rightPage);
+        
+        List<byte[]> cells = new ArrayList<>();
+        for(int j=0; j<LeafNode.numCells(left); j++){
+            cells.add(SlottedLeaf.cellBytes(left, j));
+        }
+        for(int j=0; j<LeafNode.numCells(right); j++){
+            cells.add(SlottedLeaf.cellBytes(right, j));
+        }
+
+        int total = 0;
+        for(byte[] x: cells){
+            total += x.length + SlottedLeaf.POINTER_SIZE;
+        }
+
+        if(total <= SlottedLeaf.USABLE_SPACE){
+            SlottedLeaf.rebuild(left, cells);
+            LeafNode.setNextLeaf(left, LeafNode.nextLeaf(right));
+            markDirty(leftPage);
+            markDirty(rightPage);
+            return true;
+        }
+
+        List<byte[]> leftCells = new ArrayList<>();
+        List<byte[]> rightCells = new ArrayList<>();
+        int leftCost = 0;
+        for (byte[] x : cells) {
+            if (leftCost < total / 2) {
+                leftCells.add(x);
+                leftCost += x.length + SlottedLeaf.POINTER_SIZE;
+            } else {
+                rightCells.add(x);
+            }
+        }
+        SlottedLeaf.rebuild(left, leftCells);
+        SlottedLeaf.rebuild(right, rightCells);
+
+        ByteBuffer parent = pager.getPage(parentPage);
+        InternalNode.setKey(parent, leftIdx, SlottedLeaf.maxKey(left));
+
+        markDirty(leftPage);
+        markDirty(rightPage);
+        markDirty(parentPage);
+        return false;
+    }
+
+    private boolean rebalanceInternals(int parentPage, int leftIdx, int leftPage, int rightPage) throws IOException {
+        ByteBuffer parent = pager.getPage(parentPage);
+        ByteBuffer left = pager.getPage(leftPage);
+        ByteBuffer right = pager.getPage(rightPage);
+
+        List<Integer> keys = keysOf(left);
+        keys.add(InternalNode.key(parent, leftIdx));
+        keys.addAll(keysOf(right));
+        List<Integer> children = childrenOf(left);
+        children.addAll(childrenOf(right));
+
+        if(keys.size() <= InternalNode.MAX_KEYS){
+            writeInternal(left, keys, children);
+            markDirty(leftPage);
+            markDirty(rightPage);
+            setParents(children, leftPage);
+            return true;
+        }
+
+        int L = (children.size() +1) / 2;
+        int promoted = keys.get(L-1);
+        List<Integer> leftChildren = new ArrayList<>(children.subList(0, L));
+        List<Integer> rightChildren = new ArrayList<>(children.subList(L, children.size()));
+
+        writeInternal(left, new ArrayList<>(keys.subList(0, L-1)), leftChildren);
+        writeInternal(right, new ArrayList<>(keys.subList(L, keys.size())), rightChildren);
+        markDirty(leftPage);
+        markDirty(rightPage);
+
+        setParents(leftChildren, leftPage);
+        setParents(rightChildren, rightPage);
+
+        parent = pager.getPage(parentPage);
+        InternalNode.setKey(parent, leftIdx, promoted);
+        markDirty(parentPage);
+        return false;
+    }
+
+    private void collapseRoot() throws IOException {
+        ByteBuffer root = pager.getPage(rootPageNum);
+        int childPage = InternalNode.rightChild(root);
+        ByteBuffer child = pager.getPage(childPage);
+
+        System.arraycopy(child.array(), 0, root.array(), 0, Pager.PAGE_SIZE);
+        LeafNode.setRoot(root, true);
+        LeafNode.setParent(root, 0);
+        markDirty(rootPageNum);
+
+        if(!LeafNode.isLeaf(root)){
+            setParents(childrenOf(root), rootPageNum);
+        }
+        pager.freePage(childPage);
+    }
+
+    private void removeFromParent(int parentPage, int leftIdx) throws IOException {
+        ByteBuffer parent = pager.getPage(parentPage);
+        List<Integer> keys = keysOf(parent);
+        List<Integer> children = childrenOf(parent);
+        keys.remove(leftIdx);
+        children.remove(leftIdx+1);
+        writeInternal(parent, keys, children);
+        markDirty(parentPage);
+    }
+
+    static List<Integer> keysOf(ByteBuffer node) {
+        List<Integer> out = new ArrayList<>();
+        for (int j = 0; j < InternalNode.numKeys(node); j++) out.add(InternalNode.key(node, j));
+        return out;
+    }
+  
+    static List<Integer> childrenOf(ByteBuffer node) {
+        List<Integer> out = new ArrayList<>();
+        for (int j = 0; j <= InternalNode.numKeys(node); j++) out.add(InternalNode.child(node, j));
+        return out;
+    }
+
+    static void writeInternal(ByteBuffer node, List<Integer> keys, List<Integer> children) {
+        if (children.size() != keys.size() + 1) {
+            throw new IllegalStateException("internal node: " + keys.size() + " keys but " + children.size() + " children");
+        }
+        InternalNode.setNumKeys(node, keys.size());
+        for (int j = 0; j < keys.size(); j++) {
+            InternalNode.setChild(node, j, children.get(j));
+            InternalNode.setKey(node, j, keys.get(j));
+        }
+        InternalNode.setRightChild(node, children.get(children.size() - 1));
+    }
+
+    private void setParents(List<Integer> children, int parentPage) throws IOException {
+        for (int c : children) {
+            ByteBuffer p = pager.getPage(c);
+            if (LeafNode.parent(p) != parentPage) {
+                LeafNode.setParent(p, parentPage);
+                markDirty(c);
+            }
+        }
+    }
+
+    public boolean update(Row row) throws ExecuteException, IOException {
+        Cursor c = find(row.key());
+        ByteBuffer page = pager.getPage(c.pageNum());
+
+        if (c.cellNum() >= LeafNode.numCells(page)
+                || SlottedLeaf.key(page, c.cellNum()) != row.key()) {
+            return false;
+        }
+
+        SlottedLeaf.removeCell(page, c.cellNum());
+        markDirty(c.pageNum());
+
+        byte[] cell = SlottedLeaf.makeCell(row.key(), RecordCodec.encode(row));
+        insertCellAt(c, cell);
+        return true;
+    }
+
+    
     private void markDirty(int pageNum) {
         pager.markDirty(pageNum);
-    }
-
-    private void flushDirty() throws IOException {
-        pager.commit();
     }
 
 
@@ -458,6 +623,9 @@ public class BTree {
         }
         if (LeafNode.isLeaf(page)) {
             int n = LeafNode.numCells(page);
+            if (n == 0 && pageNum != rootPageNum) {        // 7b: merging means no empty leaves
+                return "leaf " + pageNum + ": empty non-root leaf";
+            }
 
             int contentStart = SlottedLeaf.contentStart(page);
             int pointerEnd = SlottedLeaf.HEADER_SIZE + n * SlottedLeaf.POINTER_SIZE;
@@ -498,8 +666,9 @@ public class BTree {
         } else {
             
             int n = InternalNode.numKeys(page);
-            if(n < 1 || n > InternalNode.MAX_KEYS){
-                return "internal " + pageNum + ": numKeys " + n + " out of range [1, " + InternalNode.MAX_KEYS + "]";
+            int minKeys = pageNum == rootPageNum ? 1 : MIN_KEYS;    // 7b
+            if(n < minKeys || n > InternalNode.MAX_KEYS){
+                return "internal " + pageNum + ": numKeys " + n + " out of range [" + minKeys + ", " + InternalNode.MAX_KEYS + "]";
             }
             for(int i=1; i<n; i++){
                 if(InternalNode.key(page, i-1) >= InternalNode.key(page, i)){

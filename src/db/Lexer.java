@@ -19,7 +19,10 @@ public final class Lexer {
             Map.entry("table", TokenType.TABLE),
             Map.entry("delete", TokenType.DELETE),     
             Map.entry("update", TokenType.UPDATE),     
-            Map.entry("set", TokenType.SET));          
+            Map.entry("set", TokenType.SET),
+            Map.entry("begin", TokenType.BEGIN),         
+            Map.entry("commit", TokenType.COMMIT),       
+            Map.entry("rollback", TokenType.ROLLBACK));            
 
     private static final Map<Character, TokenType> SYMBOLS = Map.of(
             '(', TokenType.LPAREN,
