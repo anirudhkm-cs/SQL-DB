@@ -56,10 +56,14 @@ public final class SqlParser {
             stmt = parseInsert();
         }else if(check(TokenType.SELECT)){
             stmt = parseSelect();
-        }else if(check(TokenType.CREATE)){           
+        }else if(check(TokenType.CREATE)){            
             stmt = parseCreate();
+        }else if(check(TokenType.DELETE)){            
+            stmt = parseDelete();
+        }else if(check(TokenType.UPDATE)){            
+            stmt = parseUpdate();
         }else{
-            throw error("expected INSERT, SELECT or CREATE");
+            throw error("expected INSERT, SELECT, CREATE, UPDATE or DELETE");
         }
         match(TokenType.SEMICOLON);
         expect(TokenType.EOF, "end of input");
@@ -92,15 +96,17 @@ public final class SqlParser {
         expect(TokenType.FROM, "FROM");
         Ast.Name table = parseName("table name");
 
-        Ast.Where where = null;
-        if (match(TokenType.WHERE)) {
-            Ast.Name column = parseName("column name");
-            expect(TokenType.EQUALS, "'='");
-            where = new Ast.Where(column, parseValue());
-        }
-        return new Ast.Select(columns, table, where);
+        return new Ast.Select(columns, table, parseOptionalWhere());   
     }
 
+    private Ast.Where parseOptionalWhere() throws PrepareException {
+        if (!match(TokenType.WHERE)) {
+            return null;
+        }
+        Ast.Name column = parseName("column name");
+        expect(TokenType.EQUALS, "'='");
+        return new Ast.Where(column, parseValue());
+    }
 
     private Ast.CreateTable parseCreate() throws PrepareException {
         expect(TokenType.CREATE, "CREATE");
@@ -127,6 +133,26 @@ public final class SqlParser {
             expect(TokenType.RPAREN, "')'");
         }
         return new Ast.ColumnDef(name, type, size);
+    }
+
+    private Ast.Delete parseDelete() throws PrepareException {
+        expect(TokenType.DELETE, "DELETE");
+        expect(TokenType.FROM, "FROM");
+        Ast.Name table = parseName("table name");
+        return new Ast.Delete(table, parseOptionalWhere());
+    }
+
+    private Ast.Update parseUpdate() throws PrepareException {
+        expect(TokenType.UPDATE, "UPDATE");
+        Ast.Name table = parseName("table name");
+        expect(TokenType.SET, "SET");
+        List<Ast.Assignment> assignments = new ArrayList<>();
+        do {
+            Ast.Name column = parseName("column name");
+            expect(TokenType.EQUALS, "'='");
+            assignments.add(new Ast.Assignment(column, parseValue()));
+        } while (match(TokenType.COMMA));
+        return new Ast.Update(table, assignments, parseOptionalWhere());
     }
 
     private Ast.Literal parseValue() throws PrepareException {

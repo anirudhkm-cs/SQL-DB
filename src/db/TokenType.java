@@ -2,9 +2,11 @@ package db;
 
 public enum TokenType {
     INSERT, INTO, VALUES, SELECT, FROM, WHERE,
-    CREATE, TABLE,                      
+    CREATE, TABLE,                       
+    DELETE, UPDATE, SET,                 
 
     IDENTIFIER,     
+                    
     INTEGER,        
     STRING,
 

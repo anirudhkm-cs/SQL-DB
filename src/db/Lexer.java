@@ -8,15 +8,18 @@ public final class Lexer {
 
     private Lexer() {}
 
-    private static final Map<String, TokenType> KEYWORDS = Map.of(
-            "insert", TokenType.INSERT,
-            "into", TokenType.INTO,
-            "values", TokenType.VALUES,
-            "select", TokenType.SELECT,
-            "from", TokenType.FROM,
-            "where", TokenType.WHERE,
-            "create", TokenType.CREATE,     
-            "table", TokenType.TABLE);      
+    private static final Map<String, TokenType> KEYWORDS = Map.ofEntries(
+            Map.entry("insert", TokenType.INSERT),
+            Map.entry("into", TokenType.INTO),
+            Map.entry("values", TokenType.VALUES),
+            Map.entry("select", TokenType.SELECT),
+            Map.entry("from", TokenType.FROM),
+            Map.entry("where", TokenType.WHERE),
+            Map.entry("create", TokenType.CREATE),
+            Map.entry("table", TokenType.TABLE),
+            Map.entry("delete", TokenType.DELETE),     
+            Map.entry("update", TokenType.UPDATE),     
+            Map.entry("set", TokenType.SET));          
 
     private static final Map<Character, TokenType> SYMBOLS = Map.of(
             '(', TokenType.LPAREN,

@@ -5,7 +5,7 @@ import java.nio.ByteBuffer;
 
 public class Cursor {
 
-    private final BTree tree;         
+    private final BTree tree;        
     private int pageNum;
     private int cellNum;
     private boolean endOfTable;
@@ -19,7 +19,21 @@ public class Cursor {
     }
 
     public static Cursor atStart(BTree tree) throws IOException {
-        return tree.find(Integer.MIN_VALUE);
+        Cursor c = tree.find(Integer.MIN_VALUE);
+        c.skipEmptyLeaves();                     
+        return c;
+    }
+
+    private void skipEmptyLeaves() throws IOException {
+        ByteBuffer page = tree.pager().getPage(pageNum);
+        while (cellNum >= LeafNode.numCells(page)) {
+            int next = LeafNode.nextLeaf(page);
+            if (next == 0) break;             
+            pageNum = next;
+            cellNum = 0;
+            page = tree.pager().getPage(pageNum);
+        }
+        endOfTable = cellNum >= LeafNode.numCells(page);
     }
 
     public boolean isEndOfTable() {
@@ -28,17 +42,9 @@ public class Cursor {
 
     public void advance() throws IOException {
         cellNum++;
-        ByteBuffer page = tree.pager().getPage(pageNum);
-        if (cellNum >= LeafNode.numCells(page)) {
-            int next = LeafNode.nextLeaf(page);
-            if (next == 0) {
-                endOfTable = true;
-            } else {
-                pageNum = next;
-                cellNum = 0;
-            }
-        }
+        skipEmptyLeaves();                       
     }
+
 
     int pageNum() {
         return pageNum;

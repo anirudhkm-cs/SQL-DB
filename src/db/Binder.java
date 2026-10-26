@@ -12,14 +12,15 @@ public final class Binder {
         if (stmt instanceof Ast.Insert insert) return bindInsert(insert, db);
         if (stmt instanceof Ast.Select select) return bindSelect(select, db);
         if (stmt instanceof Ast.CreateTable create) return bindCreate(create, db, sql);
+        if (stmt instanceof Ast.Delete delete) return bindDelete(delete, db);          
+        if (stmt instanceof Ast.Update update) return bindUpdate(update, db);          
         throw new IllegalStateException("unknown statement " + stmt);
     }
 
-    
+
     private static Statement bindCreate(Ast.CreateTable create, Database db, String sql)
             throws PrepareException {
         Schema schema = schemaFrom(create);
-        
         String name = create.table().text();
         if(db.table(name) != null){
             throw error(create.table().column(), "table '" + name + "' already exists");
@@ -86,8 +87,6 @@ public final class Binder {
         return schema;
     }
 
-    
-
     private static Statement bindInsert(Ast.Insert insert, Database db) throws PrepareException {
         Schema schema = schemaOf(insert.table(), db);
         List<Ast.Literal> vals = insert.values();
@@ -106,6 +105,7 @@ public final class Binder {
         return Statement.insert(insert.table().text(), new Row(values));
     }
 
+
     private static Statement bindSelect(Ast.Select select, Database db) throws PrepareException {
         Schema schema = schemaOf(select.table(), db);
 
@@ -119,12 +119,43 @@ public final class Binder {
                 projection.add(columnIndex(name, schema));
             }
         }
-        Statement.Filter filter = null;
-        if (select.where() != null) {
-            int idx = columnIndex(select.where().column(), schema);
-            filter = new Statement.Filter(idx, convert(select.where().value(), schema.column(idx)));
-        }
+        Statement.Filter filter = bindFilter(select.where(), schema);   // 7a: shared helper
         return Statement.select(select.table().text(), projection, filter);
+    }
+
+    private static Statement.Filter bindFilter(Ast.Where where, Schema schema) throws PrepareException {
+        if (where == null) {
+            return null;
+        }
+        int idx = columnIndex(where.column(), schema);
+        return new Statement.Filter(idx, convert(where.value(), schema.column(idx)));
+    }
+
+    private static Statement bindDelete(Ast.Delete delete, Database db) throws PrepareException {
+        Schema schema = schemaOf(delete.table(), db);
+        Statement.Filter filter = bindFilter(delete.where(), schema);
+        return Statement.delete(delete.table().text(), filter);
+    }
+
+    private static Statement bindUpdate(Ast.Update update, Database db) throws PrepareException {
+        Schema schema = schemaOf(update.table(), db);
+        List<Statement.Assignment> assignments = new ArrayList<>();
+        for(Ast.Assignment a : update.assignments()){
+            int idx = columnIndex(a.column(), schema);
+            if(idx == 0){
+                throw error(a.column().column(),
+                    "cannot update the key column '" + schema.column(0).name() + "'");
+            }
+            for(Statement.Assignment existing: assignments){
+                if(existing.column() == idx){
+                    throw error(a.column().column(),
+                        "column '" + schema.column(idx).name() + "' assigned more than once");
+                }
+            }
+            assignments.add(new Statement.Assignment(idx, convert(a.value(), schema.column(idx))));
+        }
+        Statement.Filter filter = bindFilter(update.where(), schema);
+        return Statement.update(update.table().text(), assignments, filter);
     }
 
     private static Schema schemaOf(Ast.Name table, Database db) throws PrepareException {

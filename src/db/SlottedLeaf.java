@@ -1,6 +1,7 @@
 package db;
 
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
 import java.util.List;
 
 public final class SlottedLeaf {
@@ -54,7 +55,7 @@ public final class SlottedLeaf {
     static int recordLength(ByteBuffer page, int i) {
         return page.getShort(cellStart(page, i) + KEY_SIZE) & 0xFFFF;
     }
-
+    
     public static int recordOffset(ByteBuffer page, int i) {
         return cellStart(page, i) + CELL_HEADER_SIZE;
     }
@@ -107,5 +108,31 @@ public final class SlottedLeaf {
         for (byte[] cell : cells) {
             insertCell(page, LeafNode.numCells(page), cell);
         }
+    }
+
+    static void removeCell(ByteBuffer page, int i) {
+        int numCells = LeafNode.numCells(page);
+        for(int j=i; j<numCells-1; j++){
+            setCellStart(page, j, cellStart(page, j+1));
+        }
+        LeafNode.setNumCells(page, numCells-1);
+    }
+
+    static int totalFree(ByteBuffer page) {
+        int numCells = LeafNode.numCells(page);
+        int used = 0;
+        for(int i=0; i<numCells; i++){
+            used += cellLength(page, i) + POINTER_SIZE;
+        }
+        return USABLE_SPACE - used;
+    }
+
+    static void compact(ByteBuffer page) {
+        int numCells = LeafNode.numCells(page);
+        List<byte[]> cells = new ArrayList<>(numCells);
+        for (int i = 0; i < numCells; i++) {
+            cells.add(cellBytes(page, i));   
+        }
+        rebuild(page, cells);
     }
 }

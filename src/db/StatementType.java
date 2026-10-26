@@ -1,7 +1,9 @@
 package db;
 
 public enum StatementType {
-    CREATE_TABLE,       // 6a
+    CREATE_TABLE,       
     INSERT,
-    SELECT
+    SELECT,
+    DELETE,             
+    UPDATE              
 }

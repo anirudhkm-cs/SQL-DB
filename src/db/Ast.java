@@ -27,4 +27,10 @@ public final class Ast {
     public record ColumnDef(Name name, Name type, IntLiteral size) {}
 
     public record CreateTable(Name table, List<ColumnDef> columns) implements Stmt {}
+
+    public record Delete(Name table, Where where) implements Stmt {}
+
+    public record Assignment(Name column, Literal value) {}
+
+    public record Update(Name table, List<Assignment> assignments, Where where) implements Stmt {}
 }
