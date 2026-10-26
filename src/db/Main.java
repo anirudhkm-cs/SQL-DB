@@ -35,6 +35,19 @@ public class Main {
             exit(db);
             return true;
         }
+        if (cmd.equals(".crash")) {                                   // 8a: testing only
+            if (arg == null) {
+                System.out.println("Usage: .crash <point>   points: " + CrashPoints.POINTS);
+                return true;
+            }
+            try {
+                CrashPoints.arm(arg);
+                System.out.println("armed: the next commit will crash at '" + arg + "'");
+            } catch (IllegalArgumentException e) {
+                System.out.println(e.getMessage());
+            }
+            return true;
+        }
         if (cmd.equals(".tables")) {
             List<String> names = db.tableNames();
             if (names.isEmpty()) {

@@ -37,15 +37,12 @@ public class Database implements AutoCloseable {
         this.pager = new Pager(path);
         try {
             if (pager.numPages() == 0) {
-                BTree.initializeEmptyRoot(pager, CATALOG_ROOT);
-                pager.flushPage(CATALOG_ROOT);
-                pager.sync();
-
+                BTree.initializeEmptyRoot(pager, CATALOG_ROOT); 
                 ByteBuffer header = pager.getPage(0);
                 header.putInt(HEADER_MAGIC_OFFSET, MAGIC);
                 header.putInt(HEADER_CATALOG_ROOT_OFFSET, CATALOG_ROOT);
-                pager.flushPage(0);
-                pager.sync();
+                pager.markDirty(0);
+                pager.commit();
             } else {
                 if(pager.numPages() <= CATALOG_ROOT){
                     throw new IOException("Corrupt database: file has no catalog page");
@@ -170,9 +167,7 @@ public class Database implements AutoCloseable {
         }
         try {
             int rootPage = pager.allocatePage();
-            BTree.initializeEmptyRoot(pager, rootPage);
-            pager.flushPage(rootPage);
-            pager.sync();
+            BTree.initializeEmptyRoot(pager, rootPage); 
 
             int id = nextCatalogId;
             catalog.insert(new Row(List.of(id, schema.tableName(), rootPage, sql)));

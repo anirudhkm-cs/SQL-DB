@@ -4,9 +4,7 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Set;
 
 public class BTree {
 
@@ -15,7 +13,6 @@ public class BTree {
     private final int rootPageNum;
     private final Schema schema;
 
-    private final Set<Integer> dirty = new LinkedHashSet<>();
     
     public BTree(Pager pager, String name, int rootPageNum, Schema schema) {
         this.pager = pager;
@@ -28,6 +25,7 @@ public class BTree {
         ByteBuffer root = pager.getPage(pageNum);
         SlottedLeaf.initialize(root);                 
         LeafNode.setRoot(root, true);
+        pager.markDirty(pageNum);                     
     }
 
     String name() {
@@ -112,10 +110,10 @@ public class BTree {
             }
 
             byte[] cell = SlottedLeaf.makeCell(row.key(), RecordCodec.encode(row));
-            insertCellAt(c, cell);                 // 7a: shared with update()
+            insertCellAt(c, cell);                 
             flushDirty();
         } catch (IOException e) {
-            dirty.clear();
+            pager.abort();                       
             throw new ExecuteException("Insert failed: " + e.getMessage());
         }
     }
@@ -150,7 +148,7 @@ public class BTree {
             flushDirty();
         return true;
         } catch (IOException e) {
-            dirty.clear();
+            pager.abort();                      
             throw new ExecuteException("Delete failed: " + e.getMessage());
         }
     }
@@ -174,28 +172,19 @@ public class BTree {
             flushDirty();
             return true;
         } catch (IOException e) {
-            dirty.clear();
+            pager.abort();                     
             throw new ExecuteException("Update failed: " + e.getMessage());
         }
     }
 
     private void markDirty(int pageNum) {
-        dirty.add(pageNum);
+        pager.markDirty(pageNum);
     }
 
     private void flushDirty() throws IOException {
-        for (int pageNum: dirty){
-            if(pageNum!=rootPageNum){          
-                pager.flushPage(pageNum);
-            }
-        }
-        pager.sync();
-        if(dirty.contains(rootPageNum)){
-            pager.flushPage(rootPageNum);
-            pager.sync();
-        }
-        dirty.clear();
+        pager.commit();
     }
+
 
     private void splitAndInsert(Cursor c, byte[] cell) throws IOException {
         int oldPageNum = c.pageNum();
