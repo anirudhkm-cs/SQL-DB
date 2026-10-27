@@ -92,26 +92,111 @@ public final class SqlParser {
     }
 
     private Ast.Select parseSelect() throws PrepareException {
-        List<Ast.Name> columns = new ArrayList<>();
         expect(TokenType.SELECT, "SELECT");
-        if(!match(TokenType.STAR)){
-            do{
-                columns.add(parseName("column name or '*'"));
-            }while(match((TokenType.COMMA)));
+
+        List<Ast.ColumnRef> columns = new ArrayList<>();
+        boolean count = false;
+        if (match(TokenType.COUNT)) {
+            expect(TokenType.LPAREN, "'(' after COUNT");
+            expect(TokenType.STAR, "'*' inside COUNT(...)");
+            expect(TokenType.RPAREN, "')'");
+            count = true;
+        } else if (!match(TokenType.STAR)) {
+            do {
+                columns.add(parseColumnRef("column name or '*'"));
+            } while (match(TokenType.COMMA));
         }
+
         expect(TokenType.FROM, "FROM");
         Ast.Name table = parseName("table name");
 
-        return new Ast.Select(columns, table, parseOptionalWhere());   
+        Ast.Join join = null;
+        if (match(TokenType.JOIN)) {
+            Ast.Name joinTable = parseName("table name after JOIN");
+            expect(TokenType.ON, "ON");
+            Ast.ColumnRef left = parseColumnRef("column name after ON");
+            expect(TokenType.EQUALS, "'='");
+            Ast.ColumnRef right = parseColumnRef("column name after '='");
+            join = new Ast.Join(joinTable, left, right);
+        }
+
+        Ast.Expr where = parseOptionalWhere();
+
+        Ast.OrderBy orderBy = null;
+        if (match(TokenType.ORDER)) {
+            expect(TokenType.BY, "BY after ORDER");
+            Ast.ColumnRef ref = parseColumnRef("column name after ORDER BY");
+            boolean descending = false;
+            if (match(TokenType.DESC)) descending = true;
+            else match(TokenType.ASC);
+            orderBy = new Ast.OrderBy(ref, descending);
+        }
+
+        Ast.IntLiteral limit = null;
+        if (match(TokenType.LIMIT)) {
+            if (!check(TokenType.INTEGER)) throw error("expected a row count after LIMIT");
+            limit = (Ast.IntLiteral) parseValue();
+        }
+
+        return new Ast.Select(columns, count, table, join, where, orderBy, limit);
     }
 
-    private Ast.Where parseOptionalWhere() throws PrepareException {
+    private Ast.ColumnRef parseColumnRef(String what) throws PrepareException {
+        Ast.Name first = parseName(what);
+        if(match(TokenType.DOT)){
+            Ast.Name column = parseName("column name after '.'");
+            return  new Ast.ColumnRef(first, column);
+        }
+        return new Ast.ColumnRef(null, first);
+    }
+
+    private Ast.Expr parseOptionalWhere() throws PrepareException {
         if (!match(TokenType.WHERE)) {
             return null;
         }
-        Ast.Name column = parseName("column name");
-        expect(TokenType.EQUALS, "'='");
-        return new Ast.Where(column, parseValue());
+        return parseOr();
+    }
+
+    private Ast.Expr parseOr() throws PrepareException {
+        List<Ast.Expr> parts = new ArrayList<>();
+        parts.add(parseAnd());
+        while (match(TokenType.OR)) {
+            parts.add(parseAnd());
+        }
+        return parts.size() == 1 ? parts.get(0) : new Ast.Or(parts);
+    }
+
+    private Ast.Expr parseAnd() throws PrepareException {
+        List<Ast.Expr> parts = new ArrayList<>();
+        parts.add(parsePrimary());
+        while (match(TokenType.AND)) {
+            parts.add(parsePrimary());
+        }
+        return parts.size() == 1 ? parts.get(0) : new Ast.And(parts);
+    }
+
+    private Ast.Expr parsePrimary() throws PrepareException {
+        if (match(TokenType.LPAREN)) {
+        Ast.Expr inner = parseOr();
+            expect(TokenType.RPAREN, "')'");
+            return inner;
+        }
+
+        Ast.ColumnRef column = parseColumnRef("column name or '('");     // 10b: may be t.col
+
+        Ast.CompareOp op = switch (peek().type()) {
+            case EQUALS         -> Ast.CompareOp.EQ;
+            case NOT_EQUALS     -> Ast.CompareOp.NE;
+            case LESS           -> Ast.CompareOp.LT;
+            case LESS_EQUALS    -> Ast.CompareOp.LE;
+            case GREATER        -> Ast.CompareOp.GT;
+            case GREATER_EQUALS -> Ast.CompareOp.GE;
+            default -> throw error("expected a comparison (=, !=, <, <=, >, >=)");
+        };
+        advance();
+
+        Ast.Literal value = parseValue();
+        return new Ast.Compare(column, op, value);
     }
 
     private Ast.Stmt parseCreate() throws PrepareException {

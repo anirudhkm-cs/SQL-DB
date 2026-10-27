@@ -20,21 +20,39 @@ public final class Ast {
 
     public record Insert(Name table, List<Literal> values) implements Stmt {}
 
-    public record Where(Name column, Literal value) {}
+    public interface Expr {}
 
-    public record Select(List<Name> columns, Name table, Where where) implements Stmt {}
+    public enum CompareOp { EQ, NE, LT, LE, GT, GE }
+
+    public record ColumnRef(Name table, Name column) {
+        @Override
+        public String toString() {
+            return table == null ? column.text() : table.text() + "." + column.text();
+        }
+    }
+
+    public record Compare(ColumnRef column, CompareOp op, Literal value) implements Expr {}
+
+    public record And(List<Expr> parts) implements Expr {}
+
+    public record Or(List<Expr> parts) implements Expr {}
+
+    public record Select(List<ColumnRef> columns, boolean count, Name table, Join join, Expr where, OrderBy orderBy, IntLiteral limit) implements Stmt {}
+
+    public record Join(Name table, ColumnRef left, ColumnRef right) {}
+
+    public record OrderBy(ColumnRef column, boolean descending) {}
 
     public record ColumnDef(Name name, Name type, IntLiteral size) {}
 
     public record CreateTable(Name table, List<ColumnDef> columns) implements Stmt {}
 
-    public record Delete(Name table, Where where) implements Stmt {}
+    public record Delete(Name table, Expr where) implements Stmt {}
 
     public record Assignment(Name column, Literal value) {}
 
-    public record Update(Name table, List<Assignment> assignments, Where where) implements Stmt {}
+    public record Update(Name table, List<Assignment> assignments, Expr where) implements Stmt {}
 
-    // 9: CREATE INDEX <index> ON <table> (<column>)
     public record CreateIndex(Name index, Name table, Name column) implements Stmt {}
 
     public record Begin() implements Stmt {}

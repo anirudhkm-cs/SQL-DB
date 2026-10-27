@@ -70,6 +70,18 @@ final class Index {
         return ids;
     }
 
+    List<Integer> range(Object lo, Object hi) throws IOException {
+        List<Integer> ids = new ArrayList<>();
+        long start = lo == null ? Long.MIN_VALUE : keyFor(lo, 0);
+        for(Cursor c = Cursor.atOrAfter(tree, start); !c.isEndOfTable(); c.advance()){
+            if(hi != null && prefixOfKey(c.key()) > prefixOf(hi)){
+                break;
+            }
+            ids.add(c.read().key());
+        }
+        return ids;
+    }
+
     String verify(BTree table) throws IOException {
         List<Long> expected = new ArrayList<>();
         List<Object> values = new ArrayList<>();

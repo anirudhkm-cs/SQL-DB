@@ -5,7 +5,9 @@ public enum TokenType {
     CREATE, TABLE,                       
     DELETE, UPDATE, SET,                 
     BEGIN, COMMIT, ROLLBACK,
-    INDEX, ON,                           
+    INDEX, ON,                          
+    AND, OR,                                 
+    JOIN, ORDER, BY, ASC, DESC, LIMIT, COUNT,   
 
     IDENTIFIER,     
                     
@@ -13,6 +15,8 @@ public enum TokenType {
     STRING,
 
     LPAREN, RPAREN, COMMA, STAR, EQUALS, SEMICOLON,
+    DOT,                               
+    NOT_EQUALS, LESS, LESS_EQUALS, GREATER, GREATER_EQUALS,   
 
     EOF
 }

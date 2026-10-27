@@ -4,6 +4,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 
+
 public final class Binder {
 
     private Binder() {}
@@ -134,35 +135,136 @@ public final class Binder {
         return Statement.insert(insert.table().text(), new Row(values));
     }
 
+    static final class Scope {
+        final List<String> names = new ArrayList<>();
+        final List<Schema> schemas = new ArrayList<>();
+        final List<Integer> offsets = new ArrayList<>();
+        int width = 0;
 
-    private static Statement bindSelect(Ast.Select select, Database db) throws PrepareException {
-        Schema schema = schemaOf(select.table(), db);
-
-        List<Integer> projection = new ArrayList<>();
-        if (select.columns().isEmpty()) {
-            for (int i = 0; i < schema.columnCount(); i++) {
-                projection.add(i);
-            }
-        } else {
-            for (Ast.Name name : select.columns()) {
-                projection.add(columnIndex(name, schema));
-            }
+        void add(String name, Schema schema) {
+            names.add(name);
+            schemas.add(schema);
+            offsets.add(width);
+            width += schema.columnCount();
         }
-        Statement.Filter filter = bindFilter(select.where(), schema);   
-        return Statement.select(select.table().text(), projection, filter);
+
+        Column column(int combined) {
+            for (int t = schemas.size() - 1; t >= 0; t--) {
+                if (combined >= offsets.get(t)) return schemas.get(t).column(combined - offsets.get(t));
+            }
+            throw new IllegalArgumentException("column " + combined);
+        }
+
+        int resolve(Ast.ColumnRef ref) throws PrepareException {
+            String name = ref.column().text();
+
+            if(ref.table() != null){
+                for(int t=0; t<names.size(); t++){
+                    if(names.get(t).equalsIgnoreCase(ref.table().text())){
+                        int i = schemas.get(t).indexOf(name);
+                        if(i<0){
+                            throw error(ref.column().column(), "no such column '" + ref + "'");
+                        }
+                        return offsets.get(t) + i;
+                    }
+                }
+                throw error(ref.table().column(), "no table '" + ref.table().text() + "' in this statement");
+            }
+
+            int found = -1, foundTable = -1;
+            for(int t=0; t<names.size(); t++){
+                int i = schemas.get(t).indexOf(name);
+                if (i < 0) continue;
+                if (found >= 0) {
+                    throw error(ref.column().column(), "ambiguous column '" + name + "' (" + names.get(foundTable) + "." + name + " or " + names.get(t) + "." + name + "?)");
+                }
+                found = offsets.get(t) + i;
+                foundTable = t;
+            }
+            if (found < 0){
+                throw error(ref.column().column(), "no such column '" + name + "'");
+            } 
+            return found;
+            }
     }
 
-    private static Statement.Filter bindFilter(Ast.Where where, Schema schema) throws PrepareException {
+    private static Scope scopeOf(Ast.Name table, Database db) throws PrepareException {
+        Scope scope = new Scope();
+        scope.add(table.text(), schemaOf(table, db));
+        return scope;
+    }
+
+    private static Statement bindSelect(Ast.Select select, Database db) throws PrepareException {
+        Scope scope = scopeOf(select.table(), db);
+        int leftWidth = scope.width;
+
+        Statement.JoinSpec join = null;
+        if (select.join() != null) {
+            Ast.Join j = select.join();
+            if (j.table().text().equalsIgnoreCase(select.table().text())) {
+                throw error(j.table().column(), "joining a table with itself needs table aliases, which aren't supported");
+            }
+            scope.add(j.table().text(), schemaOf(j.table(), db));
+            int a = scope.resolve(j.left());
+            int b = scope.resolve(j.right());
+            if ((a < leftWidth) == (b < leftWidth)) {
+                throw error(j.left().column().column(), "ON must compare a column of " + select.table().text()
+                        + " with a column of " + j.table().text());
+            }
+            int left = Math.min(a, b), right = Math.max(a, b);
+            if (scope.column(left).type() != scope.column(right).type()) {
+                throw error(j.left().column().column(), "ON compares " + scope.column(left).type() + " with "
+                        + scope.column(right).type());
+            }
+            join = new Statement.JoinSpec(j.table().text(), left, right - leftWidth);
+        }
+
+        List<Integer> projection = new ArrayList<>();
+        if (!select.count()) {
+            if (select.columns().isEmpty()) {
+                for (int i = 0; i < scope.width; i++) projection.add(i);
+            } else {
+                for (Ast.ColumnRef ref : select.columns()) projection.add(scope.resolve(ref));
+            }
+        }
+
+        Predicate filter = bindWhere(select.where(), scope);
+
+        Statement.OrderSpec order = null;
+        if (select.orderBy() != null) {
+            order = new Statement.OrderSpec(scope.resolve(select.orderBy().column()), select.orderBy().descending());
+        }
+
+        int limit = -1;
+        if (select.limit() != null) {
+            long n = select.limit().value();
+            if (n < 0 || n > Integer.MAX_VALUE) {
+                throw error(select.limit().column(), "LIMIT must be between 0 and " + Integer.MAX_VALUE);
+            }
+            limit = (int) n;
+        }
+        return Statement.select(select.table().text(), projection, filter,
+                new Statement.SelectSpec(join, order, limit, select.count()));
+    }
+
+       private static Predicate bindWhere(Ast.Expr where, Scope scope) throws PrepareException {
         if (where == null) {
             return null;
         }
-        int idx = columnIndex(where.column(), schema);
-        return new Statement.Filter(idx, convert(where.value(), schema.column(idx)));
+        if (where instanceof Ast.Compare c) {
+            int idx = scope.resolve(c.column());
+            return new Predicate.Compare(idx, c.op(), convert(c.value(), scope.column(idx)));
+        }
+        List<Ast.Expr> parts = where instanceof Ast.And and ? and.parts() : ((Ast.Or) where).parts();
+        List<Predicate> bound = new ArrayList<>();
+        for (Ast.Expr part : parts) {
+            bound.add(bindWhere(part, scope));
+        }
+        return where instanceof Ast.And ? new Predicate.And(bound) : new Predicate.Or(bound);
     }
 
     private static Statement bindDelete(Ast.Delete delete, Database db) throws PrepareException {
-        Schema schema = schemaOf(delete.table(), db);
-        Statement.Filter filter = bindFilter(delete.where(), schema);
+        Predicate filter = bindWhere(delete.where(), scopeOf(delete.table(), db));
         return Statement.delete(delete.table().text(), filter);
     }
 
@@ -183,7 +285,7 @@ public final class Binder {
             }
             assignments.add(new Statement.Assignment(idx, convert(a.value(), schema.column(idx))));
         }
-        Statement.Filter filter = bindFilter(update.where(), schema);
+        Predicate filter = bindWhere(update.where(), scopeOf(update.table(), db));
         return Statement.update(update.table().text(), assignments, filter);
     }
 

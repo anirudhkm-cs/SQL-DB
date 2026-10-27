@@ -2,8 +2,8 @@ package db;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Comparator;  
 import java.util.List;
-import java.util.Objects;
 import java.util.StringJoiner;
 
 public final class Executor {
@@ -42,49 +42,37 @@ public final class Executor {
     }
 
     private static void select(Statement s, Database db) throws IOException {
-        for (Row row : matchingRows(s, db)) {
-            System.out.println(formatRow(row, s.projection()));
+        Statement.SelectSpec q = s.query();
+        List<Row> rows = q.join() == null ? matchingRows(s, db) : Planner.joinRows(s, db);
+        List<Integer> projection = s.projection();
+
+        if(q.order()!=null){
+            int col = q.order().column();
+            Comparator<Row> cmp = (a, b) -> Predicate.compareValues(a.get(col), b.get(col));
+            if(q.order().descending()){
+                cmp = cmp.reversed();
+            }
+            rows = new ArrayList<>(rows);
+            rows.sort(cmp);
+        }
+
+        if(q.count()){
+            rows = List.of(new Row(List.of(rows.size())));
+            projection = List.of(0);
+        }
+
+        if(q.limit() >= 0 && q.limit() < rows.size()){
+            rows = rows.subList(0, q.limit());
+        }
+
+        for(Row row: rows){
+            System.out.println(formatRow(row, projection));
         }
     }
 
+    /** 10a: the planner decides how to find the rows (and records .plan). Collect first, then change. */
     private static List<Row> matchingRows(Statement s, Database db) throws IOException {
-        BTree tree = db.table(s.table());
-        Statement.Filter f = s.filter();
-        List<Row> out = new ArrayList<>();
-
-        if(f != null && f.column()==0){
-            lastPlan = "key lookup on " + tree.name();
-            int key = (Integer) f.value();
-            Cursor c = tree.find(key);
-            if(!c.isEndOfTable()){
-                Row row = c.read();
-                if(row.key() == key){
-                    out.add(row);
-                }
-            }
-            return out;
-        }
-        Index idx = f == null ? null : db.indexOn(tree.name(), f.column());
-        if (idx != null) {
-            lastPlan = "index " + idx.name + " on " + tree.name() + "(" + tree.schema().column(f.column()).name() + ")";
-            for(int id: idx.lookup(f.value())){
-                Cursor c = tree.find(id);
-                Row row = c.isEndOfTable() ? null : c.read();
-                if(row == null || row.key() != id || !matches(row, f)){
-                    throw new IllegalStateException("index " + idx.name + " points at row " + id + " but the table " + (row == null || row.key() != id ? "has no such row" : "row doesn't match"));
-                }
-                out.add(row);
-            }
-            return out;
-        }
-        lastPlan = "full scan of " + tree.name();
-        for(Cursor c = Cursor.atStart(tree); !c.isEndOfTable(); c.advance()){
-            Row row = c.read();
-            if(matches(row, f)){
-                out.add(row);
-            }
-        }
-        return out;
+        return Planner.matchingRows(s, db);
     }
 
     private static void delete(Statement s, Database db) throws IOException, ExecuteException {
@@ -118,8 +106,5 @@ public final class Executor {
         System.out.println(count + (count == 1 ? " row updated" : " rows updated"));
     }
 
-    @SuppressWarnings("unused")
-    private static boolean matches(Row row, Statement.Filter f) {
-        return f == null || Objects.equals(row.get(f.column()), f.value());
-    }
+
 }

@@ -24,7 +24,16 @@ public final class Lexer {
             Map.entry("commit", TokenType.COMMIT),       
             Map.entry("rollback", TokenType.ROLLBACK),
             Map.entry("index", TokenType.INDEX),         
-            Map.entry("on", TokenType.ON));                          
+            Map.entry("on", TokenType.ON),               
+            Map.entry("and", TokenType.AND),             
+            Map.entry("or", TokenType.OR),
+            Map.entry("join", TokenType.JOIN),           
+            Map.entry("order", TokenType.ORDER),         
+            Map.entry("by", TokenType.BY),               
+            Map.entry("asc", TokenType.ASC),             
+            Map.entry("desc", TokenType.DESC),           
+            Map.entry("limit", TokenType.LIMIT),         
+            Map.entry("count", TokenType.COUNT));                                  
 
     private static final Map<Character, TokenType> SYMBOLS = Map.of(
             '(', TokenType.LPAREN,
@@ -32,7 +41,8 @@ public final class Lexer {
             ',', TokenType.COMMA,
             '*', TokenType.STAR,
             '=', TokenType.EQUALS,
-            ';', TokenType.SEMICOLON);
+            ';', TokenType.SEMICOLON,
+            '.', TokenType.DOT);                           
 
     public static List<Token> tokenize(String input) throws PrepareException {
         List<Token> tokens = new ArrayList<>();
@@ -43,6 +53,27 @@ public final class Lexer {
             int column = i + 1;
 
             if (Character.isWhitespace(ch)) {
+                i++;
+                continue;
+            }
+
+            
+            if (i + 1 < input.length()) {
+                String two = input.substring(i, i + 2);
+                TokenType op = switch (two) {
+                    case "<=" -> TokenType.LESS_EQUALS;
+                    case ">=" -> TokenType.GREATER_EQUALS;
+                    case "!=", "<>" -> TokenType.NOT_EQUALS;
+                    default -> null;
+                };
+                if (op != null) {
+                    tokens.add(new Token(op, two, column));
+                    i += 2;
+                    continue;
+                }
+            }
+            if (ch == '<' || ch == '>') {                                  
+                tokens.add(new Token(ch == '<' ? TokenType.LESS : TokenType.GREATER, String.valueOf(ch), column));
                 i++;
                 continue;
             }
