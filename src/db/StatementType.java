@@ -8,5 +8,6 @@ public enum StatementType {
     UPDATE,
     BEGIN,              
     COMMIT,             
-    ROLLBACK            
+    ROLLBACK,
+    CREATE_INDEX       
 }

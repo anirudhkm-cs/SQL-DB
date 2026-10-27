@@ -10,9 +10,9 @@ public final class SlottedLeaf {
 
     static final int HEADER_SIZE = LeafNode.LEAF_HEADER_SIZE;         // 16
     static final int POINTER_SIZE = Short.BYTES;                      // 2
-    static final int KEY_SIZE = Integer.BYTES;                        // 4
+    static final int KEY_SIZE = Long.BYTES;                           // 8 
     static final int LENGTH_SIZE = Short.BYTES;                       // 2
-    static final int CELL_HEADER_SIZE = KEY_SIZE + LENGTH_SIZE;       // 6
+    static final int CELL_HEADER_SIZE = KEY_SIZE + LENGTH_SIZE;       // 10
 
     static final int USABLE_SPACE = Pager.PAGE_SIZE - HEADER_SIZE;    // 4080
 
@@ -44,11 +44,11 @@ public final class SlottedLeaf {
         page.putShort(pointerOffset(i), (short) offset);
     }
 
-    public static int key(ByteBuffer page, int i) {
-        return page.getInt(cellStart(page, i));
+    public static long key(ByteBuffer page, int i) {
+        return page.getLong(cellStart(page, i));
     }
 
-    public static int maxKey(ByteBuffer page) {
+    public static long maxKey(ByteBuffer page) {
         return key(page, LeafNode.numCells(page) - 1);
     }
 
@@ -70,9 +70,9 @@ public final class SlottedLeaf {
         return out;
     }
 
-    static byte[] makeCell(int key, byte[] record) {
+    static byte[] makeCell(long key, byte[] record) {
         ByteBuffer cell = ByteBuffer.allocate(CELL_HEADER_SIZE + record.length);
-        cell.putInt(key);
+        cell.putLong(key);
         cell.putShort((short) record.length);
         cell.put(record);
         return cell.array();

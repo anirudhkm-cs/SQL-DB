@@ -11,7 +11,7 @@ public final class InternalNode {
     static final int HEADER_SIZE = RIGHT_CHILD_OFFSET + Integer.BYTES;         // 14
 
     static final int CHILD_SIZE = Integer.BYTES;
-    static final int KEY_SIZE = Integer.BYTES;
+    static final int KEY_SIZE = Long.BYTES;                                    // 9
     static final int CELL_SIZE = CHILD_SIZE + KEY_SIZE;                        // 8
 
     static final int REAL_MAX_KEYS = (Pager.PAGE_SIZE - HEADER_SIZE) / CELL_SIZE;
@@ -69,15 +69,15 @@ public final class InternalNode {
         }
     }
 
-    public static int key(ByteBuffer page, int i) {
-        return page.getInt(cellOffset(i) + CHILD_SIZE);
+    public static long key(ByteBuffer page, int i) {
+        return page.getLong(cellOffset(i) + CHILD_SIZE);
     }
 
-    public static void setKey(ByteBuffer page, int i, int key) {
-        page.putInt(cellOffset(i)+CHILD_SIZE, key);
+    public static void setKey(ByteBuffer page, int i, long key) {
+        page.putLong(cellOffset(i)+CHILD_SIZE, key);
     }
 
-    public static int findChildIndex(ByteBuffer page, int key) {
+    public static int findChildIndex(ByteBuffer page, long key) {
        int lo = 0;
        int hi = numKeys(page);
        while(lo < hi){

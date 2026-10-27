@@ -4,7 +4,8 @@ public enum TokenType {
     INSERT, INTO, VALUES, SELECT, FROM, WHERE,
     CREATE, TABLE,                       
     DELETE, UPDATE, SET,                 
-    BEGIN, COMMIT, ROLLBACK,             
+    BEGIN, COMMIT, ROLLBACK,
+    INDEX, ON,                           
 
     IDENTIFIER,     
                     

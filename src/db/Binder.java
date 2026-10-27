@@ -14,6 +14,7 @@ public final class Binder {
         if (stmt instanceof Ast.CreateTable create) return bindCreate(create, db, sql);
         if (stmt instanceof Ast.Delete delete) return bindDelete(delete, db);          
         if (stmt instanceof Ast.Update update) return bindUpdate(update, db);          
+        if (stmt instanceof Ast.CreateIndex ci) return bindCreateIndex(ci, db, sql);              
         if (stmt instanceof Ast.Begin) return Statement.transaction(StatementType.BEGIN);        
         if (stmt instanceof Ast.Commit) return Statement.transaction(StatementType.COMMIT);      
         if (stmt instanceof Ast.Rollback) return Statement.transaction(StatementType.ROLLBACK);  
@@ -25,8 +26,8 @@ public final class Binder {
             throws PrepareException {
         Schema schema = schemaFrom(create);
         String name = create.table().text();
-        if(db.table(name) != null){
-            throw error(create.table().column(), "table '" + name + "' already exists");
+        if(db.nameInUse(name)){                                                    
+            throw error(create.table().column(), "'" + name + "' already exists");
         }
         if (name.getBytes(StandardCharsets.UTF_8).length > Database.MAX_TABLE_NAME_BYTES){
             throw error(create.table().column(), "table name too long (max " + Database.MAX_TABLE_NAME_BYTES + " bytes)");
@@ -35,6 +36,31 @@ public final class Binder {
             throw error(1, "statement too long (max " + Database.MAX_SQL_BYTES + " bytes)");
         }
         return Statement.createTable(schema, sql);
+    }
+
+    private static Statement bindCreateIndex(Ast.CreateIndex ci, Database db, String sql) throws PrepareException {
+        String name = ci.index().text();
+        if (db.nameInUse(name)) {
+            throw error(ci.index().column(), "'" + name + "' already exists");
+        }
+        if (name.getBytes(StandardCharsets.UTF_8).length > Database.MAX_TABLE_NAME_BYTES) {
+            throw error(ci.index().column(), "index name too long (max " + Database.MAX_TABLE_NAME_BYTES + " bytes)");
+        }
+        if (sql.getBytes(StandardCharsets.UTF_8).length > Database.MAX_SQL_BYTES) {
+            throw error(1, "statement too long (max " + Database.MAX_SQL_BYTES + " bytes)");
+        }
+        Schema schema = schemaOf(ci.table(), db);
+        int col = columnIndex(ci.column(), schema);
+        if (col == 0) {
+            throw error(ci.column().column(), "'" + schema.column(0).name()
+                    + "' is the table's key - the table itself is already that index");
+        }
+        Index existing = db.indexOn(ci.table().text(), col);
+        if (existing != null) {
+            throw error(ci.column().column(), "column '" + schema.column(col).name()
+                    + "' already has an index: " + existing.name);
+        }
+        return Statement.createIndex(name, ci.table().text(), col, sql);
     }
 
     static Schema schemaFrom(Ast.CreateTable create) throws PrepareException {
@@ -122,7 +148,7 @@ public final class Binder {
                 projection.add(columnIndex(name, schema));
             }
         }
-        Statement.Filter filter = bindFilter(select.where(), schema);   // 7a: shared helper
+        Statement.Filter filter = bindFilter(select.where(), schema);   
         return Statement.select(select.table().text(), projection, filter);
     }
 

@@ -34,6 +34,9 @@ public final class Ast {
 
     public record Update(Name table, List<Assignment> assignments, Where where) implements Stmt {}
 
+    // 9: CREATE INDEX <index> ON <table> (<column>)
+    public record CreateIndex(Name index, Name table, Name column) implements Stmt {}
+
     public record Begin() implements Stmt {}
 
     public record Commit() implements Stmt {}

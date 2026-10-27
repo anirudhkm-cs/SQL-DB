@@ -19,8 +19,14 @@ public class Cursor {
     }
 
     public static Cursor atStart(BTree tree) throws IOException {
-        Cursor c = tree.find(Integer.MIN_VALUE);
+        Cursor c = tree.find(Long.MIN_VALUE);       
         c.skipEmptyLeaves();                     
+        return c;
+    }
+
+    public static Cursor atOrAfter(BTree tree, long key) throws IOException {
+        Cursor c = tree.find(key);
+        c.skipEmptyLeaves();
         return c;
     }
 
@@ -52,6 +58,10 @@ public class Cursor {
 
     int cellNum() {
         return cellNum;
+    }
+
+    long key() throws IOException {
+        return SlottedLeaf.key(tree.pager().getPage(pageNum), cellNum);
     }
 
     public Row read() throws IOException {

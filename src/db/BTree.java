@@ -44,7 +44,7 @@ public class BTree {
         return rootPageNum;
     }
 
-    public Cursor find(int key) throws IOException {
+    public Cursor find(long key) throws IOException {
         int pageNum = rootPageNum;
         ByteBuffer page = pager.getPage(pageNum);
         while (!LeafNode.isLeaf(page)) {
@@ -54,13 +54,13 @@ public class BTree {
         return leafFind(pageNum, key);
     }
 
-    private Cursor leafFind(int pageNum, int key) throws IOException {
+    private Cursor leafFind(int pageNum, long key) throws IOException {
         ByteBuffer leaf = pager.getPage(pageNum);
         int low = 0;
         int high = LeafNode.numCells(leaf);
         while (low < high) {
             int mid = (low + high) >>> 1;
-            int midKey = SlottedLeaf.key(leaf, mid);
+            long midKey = SlottedLeaf.key(leaf, mid);
             if (midKey == key) {
                 return new Cursor(this, pageNum, mid);
             } else if (midKey < key) {
@@ -72,20 +72,20 @@ public class BTree {
         return new Cursor(this, pageNum, low);
     }
 
-    Integer subtreeMin(int pageNum) throws IOException {
+    Long subtreeMin(int pageNum) throws IOException {
         ByteBuffer page = pager.getPage(pageNum);
         if (LeafNode.isLeaf(page)) {
             return LeafNode.numCells(page) == 0 ? null : SlottedLeaf.key(page, 0);
         }
         int n = InternalNode.numKeys(page);
         for (int i = 0; i <= n; i++) {
-            Integer k = subtreeMin(InternalNode.child(page, i));
+            Long k = subtreeMin(InternalNode.child(page, i));
             if (k != null) return k;
         }
         return null;
     }
 
-    Integer subtreeMax(int pageNum) throws IOException {
+    Long subtreeMax(int pageNum) throws IOException {
         ByteBuffer page = pager.getPage(pageNum);
         if (LeafNode.isLeaf(page)) {
             int n = LeafNode.numCells(page);
@@ -93,7 +93,7 @@ public class BTree {
         }
         int n = InternalNode.numKeys(page);
         for (int i = n; i >= 0; i--) {
-            Integer k = subtreeMax(InternalNode.child(page, i));
+            Long k = subtreeMax(InternalNode.child(page, i));
             if (k != null) return k;
         }
         return null;
@@ -112,6 +112,15 @@ public class BTree {
         insertCellAt(c, cell);  
     }
 
+    void insertEntry(long key, byte[] record) throws IOException {
+        Cursor c = find(key);
+        ByteBuffer page = pager.getPage(c.pageNum());
+        if (c.cellNum() < LeafNode.numCells(page) && SlottedLeaf.key(page, c.cellNum()) == key) {
+            throw new IllegalStateException(name + ": duplicate entry " + key);
+        }
+        insertCellAt(c, SlottedLeaf.makeCell(key, record));
+    }
+
     private void insertCellAt(Cursor c, byte[] cell) throws IOException {
         ByteBuffer page = pager.getPage(c.pageNum());
         if (SlottedLeaf.hasRoomFor(page, cell.length)) {
@@ -128,7 +137,7 @@ public class BTree {
         splitAndInsert(c, cell);
     }
 
-    public boolean delete(int key) throws IOException, ExecuteException {
+    public boolean delete(long key) throws IOException {     
             Cursor c = find(key);
             ByteBuffer page = pager.getPage(c.pageNum());
             if (c.cellNum() >= LeafNode.numCells(page)
@@ -235,7 +244,7 @@ public class BTree {
         ByteBuffer left = pager.getPage(leftPage);
         ByteBuffer right = pager.getPage(rightPage);
 
-        List<Integer> keys = keysOf(left);
+        List<Long> keys = keysOf(left);
         keys.add(InternalNode.key(parent, leftIdx));
         keys.addAll(keysOf(right));
         List<Integer> children = childrenOf(left);
@@ -250,7 +259,7 @@ public class BTree {
         }
 
         int L = (children.size() +1) / 2;
-        int promoted = keys.get(L-1);
+        long promoted = keys.get(L-1);
         List<Integer> leftChildren = new ArrayList<>(children.subList(0, L));
         List<Integer> rightChildren = new ArrayList<>(children.subList(L, children.size()));
 
@@ -286,7 +295,7 @@ public class BTree {
 
     private void removeFromParent(int parentPage, int leftIdx) throws IOException {
         ByteBuffer parent = pager.getPage(parentPage);
-        List<Integer> keys = keysOf(parent);
+        List<Long> keys = keysOf(parent);
         List<Integer> children = childrenOf(parent);
         keys.remove(leftIdx);
         children.remove(leftIdx+1);
@@ -294,8 +303,8 @@ public class BTree {
         markDirty(parentPage);
     }
 
-    static List<Integer> keysOf(ByteBuffer node) {
-        List<Integer> out = new ArrayList<>();
+    static List<Long> keysOf(ByteBuffer node) {
+        List<Long> out = new ArrayList<>();
         for (int j = 0; j < InternalNode.numKeys(node); j++) out.add(InternalNode.key(node, j));
         return out;
     }
@@ -306,7 +315,7 @@ public class BTree {
         return out;
     }
 
-    static void writeInternal(ByteBuffer node, List<Integer> keys, List<Integer> children) {
+    static void writeInternal(ByteBuffer node, List<Long> keys, List<Integer> children) {
         if (children.size() != keys.size() + 1) {
             throw new IllegalStateException("internal node: " + keys.size() + " keys but " + children.size() + " children");
         }
@@ -405,7 +414,7 @@ public class BTree {
         markDirty(oldPageNum);
         markDirty(newPageNum);
 
-        int separator = SlottedLeaf.maxKey(oldLeaf);
+        long separator = SlottedLeaf.maxKey(oldLeaf);
         if (wasRoot) {
             createNewRoot(newPageNum, separator);
         } else {
@@ -413,7 +422,7 @@ public class BTree {
         }
     }
 
-    private void insertIntoParent(int parentPage, int oldChildPage, int newChildPage, int separator)
+    private void insertIntoParent(int parentPage, int oldChildPage, int newChildPage, long separator)
             throws IOException {
         ByteBuffer parent = pager.getPage(parentPage);
         if (InternalNode.numKeys(parent) < InternalNode.MAX_KEYS) {
@@ -431,7 +440,7 @@ public class BTree {
         return -1;
     }
 
-    private void updateParentAfterSplit(int parentPage, int oldChildPage, int newChildPage, int separator)
+    private void updateParentAfterSplit(int parentPage, int oldChildPage, int newChildPage, long separator)
             throws IOException {
         ByteBuffer parent = pager.getPage(parentPage);
         int n = InternalNode.numKeys(parent);
@@ -443,7 +452,7 @@ public class BTree {
 
         InternalNode.setNumKeys(parent, n + 1);
         if (i < n) {
-            int oldUpperBound = InternalNode.key(parent, i);        
+            long oldUpperBound = InternalNode.key(parent, i);        
             for (int j = n; j > i + 1; j--) {
                 InternalNode.setChild(parent, j, InternalNode.child(parent, j - 1));
                 InternalNode.setKey(parent, j, InternalNode.key(parent, j - 1));
@@ -459,14 +468,14 @@ public class BTree {
         markDirty(parentPage);
     }
 
-    private void splitInternalAndInsert(int nodePage, int oldChildPage, int newChildPage, int separator)
+    private void splitInternalAndInsert(int nodePage, int oldChildPage, int newChildPage, long separator)
             throws IOException {
         ByteBuffer node = pager.getPage(nodePage);
         boolean wasRoot = LeafNode.isRoot(node);
         int nodeParent = LeafNode.parent(node);
 
         List<Integer> children = new ArrayList<>();
-        List<Integer> keys = new ArrayList<>();
+        List<Long> keys = new ArrayList<>();
 
         int n = InternalNode.numKeys(node);
         for(int j=0; j<n; j++){
@@ -480,7 +489,7 @@ public class BTree {
             throw new IllegalStateException("node " + nodePage + " has no entry for child " + oldChildPage);
         }
         if(i<children.size() - 1){
-            int oldUpperBound = keys.get(i);                           
+            long oldUpperBound = keys.get(i);                           
             keys.set(i, separator);
             children.add(i+1, newChildPage);
             keys.add(i+1, oldUpperBound);
@@ -498,7 +507,7 @@ public class BTree {
         LeafNode.setParent(right, nodeParent);
 
         int L = (children.size()+1)/2;
-        int promoted = keys.get(L-1);                                  
+        long promoted = keys.get(L-1);                                  
 
         InternalNode.setNumKeys(node, L-1);
         for(int j=0; j<L-1; j++){
@@ -535,7 +544,7 @@ public class BTree {
         }
     }
 
-    private int createNewRoot(int rightChildPage, int separator) throws IOException {
+    private int createNewRoot(int rightChildPage, long separator) throws IOException {
         ByteBuffer root = pager.getPage(rootPageNum);
         ByteBuffer right = pager.getPage(rightChildPage);
 
@@ -582,7 +591,7 @@ public class BTree {
 
         int pageNum = leavesInOrder.get(0);
         boolean havePrev = false;
-        int prevKey = 0;
+        long prevKey = 0;
 
         for(int i=0; i<leavesInOrder.size(); i++){
             if(pageNum == 0){
@@ -595,7 +604,7 @@ public class BTree {
             ByteBuffer page = pager.getPage(pageNum);
             int n = LeafNode.numCells(page);
             for(int c=0; c<n; c++){
-                int k = SlottedLeaf.key(page, c);
+                long k = SlottedLeaf.key(page, c);
                 if(havePrev && k<=prevKey){
                     return "leaf chain: key " + k + " in leaf " + pageNum + " is not greater than previous key " + prevKey;
                 }
@@ -623,7 +632,7 @@ public class BTree {
         }
         if (LeafNode.isLeaf(page)) {
             int n = LeafNode.numCells(page);
-            if (n == 0 && pageNum != rootPageNum) {        // 7b: merging means no empty leaves
+            if (n == 0 && pageNum != rootPageNum) {        
                 return "leaf " + pageNum + ": empty non-root leaf";
             }
 
@@ -682,13 +691,13 @@ public class BTree {
                     return err;
                 }
                 if(i < n){
-                    Integer max = subtreeMax(child);
+                    Long max = subtreeMax(child);
                     if(max != null && max > InternalNode.key(page, i)){
                         return "internal " + pageNum + ": child " + i + " max " + max + " > key(" + i + ") " + InternalNode.key(page, i);
                     }
                 }
                 if(i > 0){
-                    Integer min = subtreeMin(child);
+                    Long min = subtreeMin(child);
                     if(min != null && min <= InternalNode.key(page, i-1)){
                         return "internal " + pageNum + ": child " + i + " min " + min + " <= key(" + (i-1) + ") " + InternalNode.key(page, i-1);
                     }

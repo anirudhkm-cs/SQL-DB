@@ -6,12 +6,13 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.TreeMap;
 
 
 public class Database implements AutoCloseable {
 
-    static final int MAGIC = 0x4A444235; 
+    static final int MAGIC = 0x4A444236;    
     static final int HEADER_MAGIC_OFFSET = 0;
     static final int HEADER_CATALOG_ROOT_OFFSET = 4;
     static final int CATALOG_ROOT = 1;
@@ -31,6 +32,8 @@ public class Database implements AutoCloseable {
 
     private final Map<String, BTree> tables = new TreeMap<>();
     private final Map<String, String> sqlByTable = new TreeMap<>();
+    private final Map<String, Index> indexes = new TreeMap<>();
+    private final Map<String, String> sqlByIndex = new TreeMap<>();
     private int nextCatalogId = 1;
 
     private boolean inTransaction = false;
@@ -77,6 +80,8 @@ public class Database implements AutoCloseable {
     private void loadCatalog() throws IOException {
         tables.clear();
         sqlByTable.clear();
+        indexes.clear();
+        sqlByIndex.clear();
         int maxId = 0;
         for(Cursor c = Cursor.atStart(catalog); !c.isEndOfTable(); c.advance()){
             Row row = c.read();
@@ -85,32 +90,59 @@ public class Database implements AutoCloseable {
             int root    = (Integer) row.get(CATALOG_ROOT_COL);
             String sql  = (String)  row.get(CATALOG_SQL);
 
-            Schema schema = schemaFromSql(sql);
-
             if(root <= CATALOG_ROOT || root >= pager.numPages()){
-                throw new IOException("Corrupt catalog: table '" + name + "' has root page " + root + " (file has " + pager.numPages() + " pages)");
+                throw new IOException("Corrupt catalog: '" + name + "' has root page " + root + " (file has " + pager.numPages() + " pages)");
             }
             if(!LeafNode.isRoot(pager.getPage(root))){
-                throw new IOException("Corrupt catalog: table '" + name + "' root page " + root + " is not marked as a root");
+                throw new IOException("Corrupt catalog: '" + name + "' root page " + root + " is not marked as a root");
+            }
+            String key = name.toLowerCase();
+            if(tables.containsKey(key) || indexes.containsKey(key)){
+                throw new IOException("Corrupt catalog: duplicate name '" + name + "'");
             }
 
-            String key = name.toLowerCase();
-            if(tables.containsKey(key)){
-                throw new IOException("Corrupt catalog: duplicate table '" + name + "'");
+            Ast.Stmt stmt = parseCatalogSql(sql);
+            if (stmt instanceof Ast.CreateTable create) {
+                tables.put(key, new BTree(pager, name, root, schemaFrom(create, sql)));
+                sqlByTable.put(key, sql);
+            } else if (stmt instanceof Ast.CreateIndex ci) {
+                BTree table = tables.get(ci.table().text().toLowerCase());
+                if(table == null){
+                    throw new IOException("Corrupt catalog: index '" + name + "' is on unknown table '" + ci.table().text() + "'");
+                }
+                int col = table.schema().indexOf(ci.column().text());
+                if(col < 0){
+                    throw new IOException("Corrupt catalog: index '" + name + "' is on unknown column '" + ci.column().text() + "'");
+                }
+                if(col == 0){
+                    throw new IOException("Corrupt catalog: index '" + name + "' is on the primary key column");
+                }
+                registerIndex(name, table, col, root, sql);
+            } else {
+                throw new IOException("Corrupt catalog: not a CREATE statement: " + sql);
             }
-            tables.put(key, new BTree(pager, name, root, schema));
-            sqlByTable.put(key, sql);
             maxId = Math.max(maxId, id);
         }
         nextCatalogId = maxId + 1;
     }
 
-    static Schema schemaFromSql(String sql) throws IOException {
+    private void registerIndex(String name, BTree table, int col, int root, String sql) {
+        BTree tree = new BTree(pager, name, root, Index.schemaFor(name, table.schema(), col));
+        String key = name.toLowerCase();
+        indexes.put(key, new Index(name, table.name(), col, tree));
+        sqlByIndex.put(key, sql);
+    }
+
+    static Ast.Stmt parseCatalogSql(String sql) throws IOException {
         try {
-            Ast.Stmt stmt = SqlParser.parse(Lexer.tokenize(sql));
-            if (!(stmt instanceof Ast.CreateTable create)) {
-                throw new IOException("Corrupt catalog: not a CREATE TABLE: " + sql);
-            }
+            return SqlParser.parse(Lexer.tokenize(sql));
+        } catch (PrepareException e) {
+            throw new IOException("Corrupt catalog: " + e.getMessage() + " in: " + sql);
+        }
+    }
+
+    static Schema schemaFrom(Ast.CreateTable create, String sql) throws IOException {
+        try {
             return Binder.schemaFrom(create);
         } catch (PrepareException e) {
             throw new IOException("Corrupt catalog: " + e.getMessage() + " in: " + sql);
@@ -132,7 +164,102 @@ public class Database implements AutoCloseable {
     }
 
     public String sqlFor(String name) {
-        return sqlByTable.get(name.toLowerCase());
+        String sql = sqlByTable.get(name.toLowerCase());
+        if (sql == null) {
+            return sqlByIndex.get(name.toLowerCase());
+        }
+        StringBuilder out = new StringBuilder(sql);
+        for (Index idx : indexesOn(name)) {
+            out.append("\n").append(sqlByIndex.get(idx.name.toLowerCase()));
+        }
+        return out.toString();
+    }
+
+    boolean nameInUse(String name) {
+        return tables.containsKey(name.toLowerCase()) || indexes.containsKey(name.toLowerCase());
+    }
+
+    Index index(String name) {
+        return indexes.get(name.toLowerCase());
+    }
+
+    BTree tree(String name) {
+        BTree t = table(name);
+        if (t != null) return t;
+        Index idx = index(name);
+        return idx == null ? null : idx.tree;
+    }
+
+    List<Index> indexesOn(String table) {
+        List<Index> out = new ArrayList<>();
+        for (Index idx : indexes.values()) {
+            if (idx.tableName.equalsIgnoreCase(table)) out.add(idx);
+        }
+        return out;
+    }
+
+    Index indexOn(String table, int column) {
+        for (Index idx : indexesOn(table)) {
+            if (idx.column == column) return idx;
+        }
+        return null;
+    }
+
+    List<Index> allIndexes() {
+        return new ArrayList<>(indexes.values());
+    }
+
+    public void createIndex(Statement.IndexSpec spec, String tableName, String sql) throws IOException, ExecuteException {
+        if(nameInUse(spec.name())){
+            throw new ExecuteException("Name '" + spec.name() + "' is already in use");
+        }
+        int rootPage = pager.allocatePage();
+        BTree.initializeEmptyRoot(pager, rootPage);
+        int id = nextCatalogId;
+        catalog.insert(new Row(List.of(id, spec.name(), rootPage, sql)));
+        nextCatalogId = id+1;
+
+        BTree table = table(tableName);
+        registerIndex(spec.name(), table, spec.column(), rootPage, sql);
+
+        List<Row> rows = new ArrayList<>();
+        for(Cursor c = Cursor.atStart(table); !c.isEndOfTable(); c.advance()){
+            rows.add(c.read());
+        }
+        Index index = index(spec.name());
+        for(Row row: rows){
+            index.add(row);
+        }
+    }
+
+    void insertRow(String tableName, Row row) throws IOException, ExecuteException {
+        table(tableName).insert(row);
+        for(Index idx: indexesOn(tableName)){
+            idx.add(row);
+        }
+    }
+
+    boolean deleteRow(String tableName, Row old) throws IOException, ExecuteException {
+        if (!table(tableName).delete(old.key())) {
+            return false;
+        }
+        for(Index idx: indexesOn(tableName)){
+            idx.remove(old);
+        }
+        return true;
+    }
+
+    boolean updateRow(String tableName, Row old, Row updated) throws IOException, ExecuteException {
+        if (!table(tableName).update(updated)) {
+            return false;
+        }
+        for(Index idx: indexesOn(tableName)){
+            if(!Objects.equals(old.get(idx.column), updated.get(idx.column))){
+                idx.remove(old);
+                idx.add(updated);
+            }
+        }
+        return true;
     }
 
 
@@ -148,6 +275,7 @@ public class Database implements AutoCloseable {
         List<BTree> trees = new ArrayList<>();
         trees.add(catalog);
         trees.addAll(tables.values());
+        for (Index idx : indexes.values()) trees.add(idx.tree);          
 
         for (BTree tree : trees) {
             List<Integer> pages = new ArrayList<>();

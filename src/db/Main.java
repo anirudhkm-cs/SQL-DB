@@ -51,6 +51,23 @@ public class Main {
             }
             return true;
         }
+        if (cmd.equals(".plan")) {                                    
+            System.out.println(Executor.lastPlan);
+            return true;
+        }
+        if (cmd.equals(".indexes")) {                                 
+            List<Index> all = db.allIndexes();
+            if (all.isEmpty()) {
+                System.out.println("(no indexes)");
+            }
+            for (Index idx : all) {
+                if (arg == null || idx.tableName.equalsIgnoreCase(arg)) {
+                    System.out.println(idx.name + " on " + idx.tableName + "("
+                            + db.table(idx.tableName).schema().column(idx.column).name() + ")");
+                }
+            }
+            return true;
+        }
         if (cmd.equals(".pages")) {                                   
             System.out.println(db.pageStats());
             return true;
@@ -89,6 +106,9 @@ public class Main {
                 for (String name : db.tableNames()) {
                     allOk &= checkTree(db.table(name));
                 }
+                for (Index idx : db.allIndexes()) {                   
+                    allOk &= checkIndex(db, idx);
+                }
                 if (allOk) {
                     String err = db.checkPages();
                     System.out.println("pages: " + (err == null ? "OK" : err));
@@ -97,13 +117,15 @@ public class Main {
                 }
                 return true;
             }
-            BTree tree = db.table(arg);
+            BTree tree = db.tree(arg);                                
             if (tree == null) {
-                System.out.println("No such table: " + arg);
+                System.out.println("No such table or index: " + arg);
                 return true;
             }
             if (cmd.equals(".btree")) {
                 tree.printTree();
+            } else if (db.index(arg) != null) {
+                checkIndex(db, db.index(arg));
             } else {
                 checkTree(tree);
             }
@@ -112,6 +134,15 @@ public class Main {
 
 
         return false;
+    }
+
+    private static boolean checkIndex(Database db, Index idx) throws IOException {
+        String err = idx.tree.check();
+        if (err == null) {
+            err = idx.verify(db.table(idx.tableName));
+        }
+        System.out.println(idx.name + ": " + (err == null ? "OK" : err));
+        return err == null;
     }
 
     private static boolean checkTree(BTree tree) throws IOException {

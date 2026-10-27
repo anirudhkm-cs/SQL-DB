@@ -22,7 +22,9 @@ public final class Lexer {
             Map.entry("set", TokenType.SET),
             Map.entry("begin", TokenType.BEGIN),         
             Map.entry("commit", TokenType.COMMIT),       
-            Map.entry("rollback", TokenType.ROLLBACK));            
+            Map.entry("rollback", TokenType.ROLLBACK),
+            Map.entry("index", TokenType.INDEX),         
+            Map.entry("on", TokenType.ON));                          
 
     private static final Map<Character, TokenType> SYMBOLS = Map.of(
             '(', TokenType.LPAREN,
@@ -52,8 +54,10 @@ public final class Lexer {
                 continue;
             }
 
-            if (Character.isDigit(ch)) {
+            boolean negative = ch == '-' && i + 1 < input.length() && Character.isDigit(input.charAt(i + 1));
+            if (Character.isDigit(ch) || negative) {               
                 int start = i;
+                if (negative) i++;
                 while (i < input.length() && Character.isDigit(input.charAt(i))) i++;
                 if (i < input.length() && isWordChar(input.charAt(i))) {
                     throw new PrepareException("Syntax error at column " + column

@@ -114,9 +114,18 @@ public final class SqlParser {
         return new Ast.Where(column, parseValue());
     }
 
-    private Ast.CreateTable parseCreate() throws PrepareException {
+    private Ast.Stmt parseCreate() throws PrepareException {
         expect(TokenType.CREATE, "CREATE");
-        expect(TokenType.TABLE, "TABLE");
+        if (match(TokenType.INDEX)) {                                  
+            Ast.Name index = parseName("index name");
+            expect(TokenType.ON, "ON");
+            Ast.Name table = parseName("table name");
+            expect(TokenType.LPAREN, "'('");
+            Ast.Name column = parseName("column name");
+            expect(TokenType.RPAREN, "')'");
+            return new Ast.CreateIndex(index, table, column);
+        }
+        expect(TokenType.TABLE, "TABLE or INDEX");
         Ast.Name table = parseName("table name");
         expect(TokenType.LPAREN, "'('");
         List<Ast.ColumnDef> columns = new ArrayList<>();
