@@ -68,7 +68,7 @@ final class Planner {
         boolean empty = key.empty();
         for(Bounds b: ib) empty |= b.empty();
         if(empty){
-            Executor.lastPlan = "empty: the WHERE can't match any row";
+            Executor.setPlan("empty: the WHERE can't match any row");
             return new ArrayList<>();
         }
 
@@ -77,20 +77,20 @@ final class Planner {
         List<Row> candidates;
         Index idx;
         if(key.isPoint()){
-            Executor.lastPlan = "key lookup on " + t;
+            Executor.setPlan("key lookup on " + t);
             candidates = scanKeyRange(tree, key);
         } else if((idx = pick(indexes, ib, true)) != null){
-            Executor.lastPlan = "index " + idx.name + " on " + t + "(" + columnName(tree, idx) + ")";
+            Executor.setPlan("index " + idx.name + " on " + t + "(" + columnName(tree, idx) + ")");
             candidates = fetch(tree, idx.lookup(ib.get(indexes.indexOf(idx)).lo()));
         } else if (key.isBounded()) {
-            Executor.lastPlan = "key range on " + t + ": " + keyName + " in " + key;
+            Executor.setPlan("key range on " + t + ": " + keyName + " in " + key);
             candidates = scanKeyRange(tree, key);
         } else if ((idx = pick(indexes, ib, false)) != null) {
             Bounds b = ib.get(indexes.indexOf(idx));
-            Executor.lastPlan = "index range " + idx.name + " on " + t + ": " + columnName(tree, idx) + " in " + b;
+            Executor.setPlan("index range " + idx.name + " on " + t + ": " + columnName(tree, idx) + " in " + b);
             candidates = fetch(tree, idx.range(b.lo(), b.hi()));
         } else {
-            Executor.lastPlan = "full scan of " + t;
+            Executor.setPlan("full scan of " + t);
             candidates = scanKeyRange(tree, Bounds.ALL);
         }
 
@@ -110,7 +110,7 @@ final class Planner {
         int width = left.schema().columnCount();
 
         List<Row> outer = matchingRows(left, restrict(s.where(), 0, width), db);
-        String outerPlan = Executor.lastPlan;
+        String outerPlan = Executor.plan();
 
         int rc = join.rightColumn();
         Index idx = rc == 0 ? null : db.indexOn(right.name(), rc);
@@ -152,7 +152,7 @@ final class Planner {
             }
         }
 
-        Executor.lastPlan = "join: " + outerPlan + "; then for each row: " + innerPlan;
+        Executor.setPlan("join: " + outerPlan + "; then for each row: " + innerPlan);
         return out;
     }
 

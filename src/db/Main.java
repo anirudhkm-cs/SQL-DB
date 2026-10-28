@@ -4,7 +4,6 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.nio.file.Path;
-import java.util.List;
 
 public class Main {
 
@@ -29,128 +28,6 @@ public class Main {
         return line.trim();
     }
 
-    private static boolean doMetaCommand(String line, Database db) throws IOException {
-        String[] parts = line.split("\\s+");
-        String cmd = parts[0];
-        String arg = parts.length > 1 ? parts[1] : null;
-
-        if (cmd.equals(".exit")) {
-            exit(db);
-            return true;
-        }
-        if (cmd.equals(".crash")) {                                  
-            if (arg == null) {
-                System.out.println("Usage: .crash <point>   points: " + CrashPoints.POINTS);
-                return true;
-            }
-            try {
-                CrashPoints.arm(arg);
-                System.out.println("armed: the next commit will crash at '" + arg + "'");
-            } catch (IllegalArgumentException e) {
-                System.out.println(e.getMessage());
-            }
-            return true;
-        }
-        if (cmd.equals(".plan")) {                                    
-            System.out.println(Executor.lastPlan);
-            return true;
-        }
-        if (cmd.equals(".indexes")) {                                 
-            List<Index> all = db.allIndexes();
-            if (all.isEmpty()) {
-                System.out.println("(no indexes)");
-            }
-            for (Index idx : all) {
-                if (arg == null || idx.tableName.equalsIgnoreCase(arg)) {
-                    System.out.println(idx.name + " on " + idx.tableName + "("
-                            + db.table(idx.tableName).schema().column(idx.column).name() + ")");
-                }
-            }
-            return true;
-        }
-        if (cmd.equals(".pages")) {                                   
-            System.out.println(db.pageStats());
-            return true;
-        }
-        if (cmd.equals(".tables")) {
-            List<String> names = db.tableNames();
-            if (names.isEmpty()) {
-                System.out.println("(no tables)");
-            }
-            for (String name : names) {
-                System.out.println(name);
-            }
-            return true;
-        }
-        if (cmd.equals(".schema")) {
-            if (arg == null) {
-                System.out.println("Usage: .schema <table>");
-                return true;
-            }
-            String sql = db.sqlFor(arg);
-            if (sql == null) {
-                System.out.println("No such table: " + arg);
-                return true;
-            }
-            System.out.println(sql);
-            return true;
-        }
-        if (cmd.equals(".btree") || cmd.equals(".check")) {
-            if (arg == null) {
-                if (cmd.equals(".btree")) {
-                    System.out.println("Usage: .btree <table>");
-                    return true;
-                }
-  
-                boolean allOk = checkTree(db.catalog());
-                for (String name : db.tableNames()) {
-                    allOk &= checkTree(db.table(name));
-                }
-                for (Index idx : db.allIndexes()) {                   
-                    allOk &= checkIndex(db, idx);
-                }
-                if (allOk) {
-                    String err = db.checkPages();
-                    System.out.println("pages: " + (err == null ? "OK" : err));
-                } else {
-                    System.out.println("pages: skipped (fix the tree errors first)");
-                }
-                return true;
-            }
-            BTree tree = db.tree(arg);                                
-            if (tree == null) {
-                System.out.println("No such table or index: " + arg);
-                return true;
-            }
-            if (cmd.equals(".btree")) {
-                tree.printTree();
-            } else if (db.index(arg) != null) {
-                checkIndex(db, db.index(arg));
-            } else {
-                checkTree(tree);
-            }
-            return true;
-        }
-
-
-        return false;
-    }
-
-    private static boolean checkIndex(Database db, Index idx) throws IOException {
-        String err = idx.tree.check();
-        if (err == null) {
-            err = idx.verify(db.table(idx.tableName));
-        }
-        System.out.println(idx.name + ": " + (err == null ? "OK" : err));
-        return err == null;
-    }
-
-    private static boolean checkTree(BTree tree) throws IOException {
-        String err = tree.check();
-        System.out.println(tree.name() + ": " + (err == null ? "OK" : err));
-        return err == null;
-    }
-
     public static void main(String[] args) throws IOException {
         if (args.length != 1) {
             System.out.println("Usage: java -cp out db.Main <database-file>");
@@ -167,6 +44,9 @@ public class Main {
             return;
         }
 
+        // 11: the REPL is now a thin loop around a Session; Server is another one.
+        Session session = new Session(db);
+        Output out = new ConsoleOutput();
         BufferedReader in = new BufferedReader(new InputStreamReader(System.in));
 
         while (true) {
@@ -177,29 +57,16 @@ public class Main {
             if (line.isBlank()) {
                 continue;
             }
-
-            if (line.startsWith(".")) {
-                if (!doMetaCommand(line, db)) {
-                    System.out.println("Unrecognized command: " + line);
-                }
-                continue;
+            if (line.equals(".exit") || line.startsWith(".exit ")) {
+                exit(db);
             }
 
-            Statement statement;
-            try {
-                statement = Parser.prepare(line, db);
-            } catch (PrepareException e) {
-                System.out.println(e.getMessage());
-                continue;
+            Session.Result result = session.handle(line, out);
+            if (result.kind() == Session.Kind.ERROR) {
+                System.out.println(result.error());
+            } else if (result.kind() == Session.Kind.STATEMENT) {
+                System.out.println("Executed");
             }
-
-            try {
-                Executor.execute(statement, db);
-            } catch (ExecuteException e) {
-                System.out.println(e.getMessage());
-                continue;
-            }
-            System.out.println("Executed");
         }
     }
 }

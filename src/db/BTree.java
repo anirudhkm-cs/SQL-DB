@@ -723,28 +723,28 @@ public class BTree {
         }
     }
 
-    public void printTree() throws IOException {
-        printNode(rootPageNum, 0);
+    public void printTree(Output out) throws IOException {                
+        printNode(rootPageNum, 0, out);
     }
 
-    public void printNode(int pageNum, int indentLevel) throws IOException {
+    public void printNode(int pageNum, int indentLevel, Output out) throws IOException {
         ByteBuffer page = pager.getPage(pageNum);
         String indent = "  ".repeat(indentLevel);
 
         if (LeafNode.isLeaf(page)) {
             int n = LeafNode.numCells(page);
-            System.out.println(indent + "- leaf (size " + n + ")");
+            out.message(indent + "- leaf (size " + n + ")");
             for (int i = 0; i < n; i++) {
-                System.out.println(indent + "  - " + SlottedLeaf.key(page, i));
+                out.message(indent + "  - " + SlottedLeaf.key(page, i));
             }
         } else {
             int n = InternalNode.numKeys(page);
-            System.out.println(indent + "- internal (size " + n + ")");
+            out.message(indent + "- internal (size " + n + ")");
             for (int i = 0; i < n; i++) {
-                printNode(InternalNode.child(page, i), indentLevel + 1);
-                System.out.println(indent + "  - key " + InternalNode.key(page, i));
+                printNode(InternalNode.child(page, i), indentLevel + 1, out);
+                out.message(indent + "  - key " + InternalNode.key(page, i));
             }
-            printNode(InternalNode.rightChild(page), indentLevel + 1);
+            printNode(InternalNode.rightChild(page), indentLevel + 1, out);
         }
     }
 }

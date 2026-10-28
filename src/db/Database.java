@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.TreeMap;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 
 public class Database implements AutoCloseable {
@@ -35,6 +36,8 @@ public class Database implements AutoCloseable {
     private final Map<String, Index> indexes = new TreeMap<>();
     private final Map<String, String> sqlByIndex = new TreeMap<>();
     private int nextCatalogId = 1;
+
+    final ReentrantReadWriteLock lock = new ReentrantReadWriteLock(true);
 
     private boolean inTransaction = false;
 

@@ -13,7 +13,6 @@ import java.util.Arrays;
 import java.util.Set;
 import java.util.TreeSet;
 
-
 public final class Pager implements AutoCloseable {
 
     public static final int PAGE_SIZE = 4096;
@@ -51,11 +50,11 @@ public final class Pager implements AutoCloseable {
         this.committedNumPages = numPages;
     }
 
-    public int numPages() {
+    public synchronized int numPages() {
         return numPages;
     }
 
-    public int allocatePage() throws IOException {
+    public synchronized int allocatePage() throws IOException {
         ByteBuffer header = getPage(0);
         int head = header.getInt(HEADER_FREE_LIST_OFFSET);
         if(head == 0){
@@ -74,7 +73,7 @@ public final class Pager implements AutoCloseable {
         return head;
     }
 
-    public void freePage(int n) throws IOException {
+    public synchronized void freePage(int n) throws IOException {
         if(n <= 0 || n>= numPages){
             throw new IllegalArgumentException("cannot free page " + n);
         }
@@ -90,7 +89,7 @@ public final class Pager implements AutoCloseable {
         markDirty(n);
     }
 
-    List<Integer> freeList() throws IOException {
+    synchronized List<Integer> freeList() throws IOException {
         List<Integer> out = new ArrayList<>();
         int p = getPage(0).getInt(HEADER_FREE_LIST_OFFSET);
         while (p != 0) {
@@ -103,7 +102,7 @@ public final class Pager implements AutoCloseable {
         return out;
     }
 
-    public ByteBuffer getPage(int n) throws IOException {
+    public synchronized ByteBuffer getPage(int n) throws IOException {
         ByteBuffer cached = cache.get(n);
         if (cached != null) {
             return cached;
@@ -127,14 +126,14 @@ public final class Pager implements AutoCloseable {
         return page;
     }
 
-    public void markDirty(int n) {
+    public synchronized void markDirty(int n) {
         if (!cache.containsKey(n)) {
             throw new IllegalStateException("page " + n + " marked dirty but isn't in the cache");
         }
         dirty.add(n);
     }
 
-    public void commit() throws IOException {
+    public synchronized void commit() throws IOException {
         if (dirty.isEmpty()) {
             return;
         }
@@ -167,7 +166,7 @@ public final class Pager implements AutoCloseable {
         dirty.clear();
     }
 
-    public void abort() {
+    public synchronized void abort() {
         for(int n: dirty){
             cache.remove(n);
         }
