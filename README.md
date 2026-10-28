@@ -160,64 +160,6 @@ ROLLBACK
 | `.crash <point>` | Make the next commit crash at a given point (see below) |
 | `.exit` | Quit. An uncommitted transaction is discarded |
 
-## Testing crash recovery
-
-`.crash` makes the process stop abruptly (exit code 42) at a chosen point during the next commit, so you can check that the WAL recovers correctly.
-
-Crash points: `mid-frame`, `before-commit`, `after-commit`, `mid-checkpoint`, `before-truncate`.
-
-```text
-$ java -cp out db.Main mydata.db
-db > BEGIN
-db*> INSERT INTO users VALUES (3, 'carol', 40)
-db*> .crash after-commit
-db*> COMMIT
-$ java -cp out db.Main mydata.db          # restart: the WAL is replayed
-db > SELECT * FROM users
-( 1, alice, 30 )
-( 2, bob, 25 )
-( 3, carol, 40 )
-db > .check
-...
-pages: OK
-```
-
-A crash before the commit record is written (`mid-frame`, `before-commit`) loses the transaction. A crash after it (`after-commit`, `mid-checkpoint`, `before-truncate`) keeps it.
-
-## Project structure
-
-```text
-src/db/
-├── Main.java            Interactive shell
-├── Server.java          Multi-client TCP server
-├── Client.java          TCP client shell
-├── Wire.java            Framed wire protocol (Query / Row / Message / Done / Error)
-├── Session.java         Per-connection state, locking and meta commands
-│
-├── Lexer.java           SQL tokenizer
-├── SqlParser.java       Recursive-descent parser that builds the AST
-├── Ast.java             AST node types
-├── Binder.java          Resolves names and types and checks limits
-├── Parser.java          Lexer → parser → binder pipeline
-├── Statement.java       Bound, executable statement
-├── Planner.java         Chooses scan, key range or index range; runs joins
-├── Executor.java        Runs statements
-├── Predicate.java       Evaluates WHERE clauses
-│
-├── Database.java        Tables, indexes, catalog and transactions
-├── Catalog.java         System catalog (jdb_catalog)
-├── Schema.java, Column.java, Row.java
-├── RecordCodec.java     Turns rows into bytes and back
-├── BTree.java           B+ tree insert, delete, split, merge and checks
-├── InternalNode.java    Internal node page layout
-├── SlottedLeaf.java     Slotted leaf page layout
-├── LeafNode.java, Cursor.java
-├── Index.java           Secondary indexes
-├── Pager.java           Page cache, free list and multi-version snapshots
-├── Wal.java             Write-ahead log and recovery
-└── CrashPoints.java     Fault injection for recovery tests
-```
-
 ## Limitations
 
 This is a learning project, not a production database. Some current limits:
