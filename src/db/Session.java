@@ -19,7 +19,6 @@ final class Session {
 
     private final Database db;
     private final long lockTimeoutMs;
- 
     private boolean holdsWriteLock = false;
 
     Session(Database db) {
@@ -42,34 +41,45 @@ final class Session {
         } catch (PrepareException e) {
             return Result.error(e.getMessage());
         }
-        if(holdsWriteLock){
+        if (holdsWriteLock) {
             Result r = run(line, out);
-            if(!db.inTransaction()){
+            if (!db.inTransaction()) {
                 holdsWriteLock = false;
-                db.lock.writeLock().unlock();
+                db.writeLock.unlock();
             }
             return r;
         }
-
-        Lock lock = write ? db.lock.writeLock() : db.lock.readLock();
-        if(!acquire(lock)){
-            return Result.error("database is busy: another client's transaction is in progress (waited " + lockTimeoutMs + " ms)");
-        }
-        try{
-            return run(line, out);
-        }finally{
-            if(write && db.inTransaction()){
-                holdsWriteLock = true;
-            }else{
-                lock.unlock();
+        if (!write) {
+            try {
+                db.beginRead();
+            } catch (IOException e) {
+                return Result.error(e.getMessage());
             }
+            try {
+                return run(line, out);
+            } finally{
+                db.endRead();
+            }
+        }
+        if (!acquire(db.writeLock)) {
+            return Result.error("database is busy: another client's transaction is in progress (waited "
+                    + lockTimeoutMs + " ms)");
+        }
+        boolean keep = false;
+        try {
+            Result r = run(line, out);
+            if (db.inTransaction()) {
+                holdsWriteLock = true;
+                keep = true;
+            }
+            return r;
+        } finally {
+            if (!keep) db.writeLock.unlock();
         }
     }
 
     static boolean needsWriteLock(String line) throws PrepareException {
-        if(line.startsWith(".")){
-            return false;
-        }
+        if (line.startsWith(".")) return false;
         List<Token> tokens = Lexer.tokenize(line);
         return tokens.isEmpty() || tokens.get(0).type() != TokenType.SELECT;
     }
@@ -84,16 +94,14 @@ final class Session {
     }
 
     boolean close() {
-        if(!holdsWriteLock){
-            return false;
-        }
-        try{
+        if (!holdsWriteLock) return false;
+        try {
             db.rollback();
-        }catch(ExecuteException e){
-            System.err.println("rollback on close failed: " + e.getMessage());
-        }finally{
+        } catch (ExecuteException e) {
+            System.out.println("rollback failed: " + e.getMessage());
+        } finally {
             holdsWriteLock = false;
-            db.lock.writeLock().unlock();
+            db.writeLock.unlock();
         }
         return true;
     }
@@ -149,6 +157,10 @@ final class Session {
                             + db.table(idx.tableName).schema().column(idx.column).name() + ")");
                 }
             }
+            return true;
+        }
+        if (cmd.equals(".versions")) {                                
+            out.message(db.versionStats());
             return true;
         }
         if (cmd.equals(".pages")) {                                   

@@ -7,8 +7,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.TreeMap;
-import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.concurrent.locks.ReentrantLock;
 
 
 public class Database implements AutoCloseable {
@@ -31,13 +30,9 @@ public class Database implements AutoCloseable {
     private final Pager pager;
     private final BTree catalog;
 
-    private final Map<String, BTree> tables = new TreeMap<>();
-    private final Map<String, String> sqlByTable = new TreeMap<>();
-    private final Map<String, Index> indexes = new TreeMap<>();
-    private final Map<String, String> sqlByIndex = new TreeMap<>();
-    private int nextCatalogId = 1;
+    private Catalog live = new Catalog();
 
-    final ReentrantReadWriteLock lock = new ReentrantReadWriteLock(true);
+    final ReentrantLock writeLock = new ReentrantLock(true);
 
     private boolean inTransaction = false;
 
@@ -55,7 +50,7 @@ public class Database implements AutoCloseable {
                 header.putInt(HEADER_MAGIC_OFFSET, MAGIC);
                 header.putInt(HEADER_CATALOG_ROOT_OFFSET, CATALOG_ROOT);
                 pager.markDirty(0);
-                pager.commit();
+                pager.commit(new Catalog());
             } else {
                 if(pager.numPages() <= CATALOG_ROOT){
                     throw new IOException("Corrupt database: file has no catalog page");
@@ -74,6 +69,7 @@ public class Database implements AutoCloseable {
             }
             this.catalog = new BTree(pager, CATALOG_NAME, CATALOG_ROOT, CATALOG_SCHEMA);
             loadCatalog();
+            pager.publishCatalog(live.copy());
         } catch (IOException | RuntimeException e) {
             pager.close();
             throw e;
@@ -81,10 +77,10 @@ public class Database implements AutoCloseable {
     }
 
     private void loadCatalog() throws IOException {
-        tables.clear();
-        sqlByTable.clear();
-        indexes.clear();
-        sqlByIndex.clear();
+        live = new Catalog();
+        Map<String, BTree> tables = live.tables;
+        Map<String, String> sqlByTable = live.sqlByTable;
+        Map<String, Index> indexes = live.indexes;
         int maxId = 0;
         for(Cursor c = Cursor.atStart(catalog); !c.isEndOfTable(); c.advance()){
             Row row = c.read();
@@ -126,14 +122,14 @@ public class Database implements AutoCloseable {
             }
             maxId = Math.max(maxId, id);
         }
-        nextCatalogId = maxId + 1;
+        live.nextCatalogId = maxId + 1;
     }
 
     private void registerIndex(String name, BTree table, int col, int root, String sql) {
         BTree tree = new BTree(pager, name, root, Index.schemaFor(name, table.schema(), col));
         String key = name.toLowerCase();
-        indexes.put(key, new Index(name, table.name(), col, tree));
-        sqlByIndex.put(key, sql);
+        live.indexes.put(key, new Index(name, table.name(), col, tree));
+        live.sqlByIndex.put(key, sql);
     }
 
     static Ast.Stmt parseCatalogSql(String sql) throws IOException {
@@ -156,34 +152,51 @@ public class Database implements AutoCloseable {
         return catalog;
     }
 
+    private Catalog cat() {
+        Pager.Snapshot s = pager.snapshot();
+        return s!= null ? s.catalog() : live;
+    }
+
+    void beginRead() throws IOException {
+        pager.beginRead();
+    }
+
+    void endRead() {
+        pager.endRead();
+    }
+
+    String versionStats() {
+        return pager.versionStats();
+    }
+
     public BTree table(String name) {
-        return tables.get(name.toLowerCase());
+        return cat().tables.get(name.toLowerCase());
     }
 
     public List<String> tableNames() {
         List<String> names = new ArrayList<>();
-        for (BTree t : tables.values()) names.add(t.name());
+        for (BTree t : cat().tables.values()) names.add(t.name());
         return names;
     }
 
     public String sqlFor(String name) {
-        String sql = sqlByTable.get(name.toLowerCase());
+        String sql = cat().sqlByTable.get(name.toLowerCase());
         if (sql == null) {
-            return sqlByIndex.get(name.toLowerCase());
+            return cat().sqlByIndex.get(name.toLowerCase());
         }
         StringBuilder out = new StringBuilder(sql);
         for (Index idx : indexesOn(name)) {
-            out.append("\n").append(sqlByIndex.get(idx.name.toLowerCase()));
+            out.append("\n").append(cat().sqlByIndex.get(idx.name.toLowerCase()));
         }
         return out.toString();
     }
 
     boolean nameInUse(String name) {
-        return tables.containsKey(name.toLowerCase()) || indexes.containsKey(name.toLowerCase());
+        return cat().tables.containsKey(name.toLowerCase()) || cat().indexes.containsKey(name.toLowerCase());
     }
 
     Index index(String name) {
-        return indexes.get(name.toLowerCase());
+        return cat().indexes.get(name.toLowerCase());
     }
 
     BTree tree(String name) {
@@ -195,7 +208,7 @@ public class Database implements AutoCloseable {
 
     List<Index> indexesOn(String table) {
         List<Index> out = new ArrayList<>();
-        for (Index idx : indexes.values()) {
+        for (Index idx : cat().indexes.values()) {
             if (idx.tableName.equalsIgnoreCase(table)) out.add(idx);
         }
         return out;
@@ -209,7 +222,7 @@ public class Database implements AutoCloseable {
     }
 
     List<Index> allIndexes() {
-        return new ArrayList<>(indexes.values());
+        return new ArrayList<>(cat().indexes.values());
     }
 
     public void createIndex(Statement.IndexSpec spec, String tableName, String sql) throws IOException, ExecuteException {
@@ -218,9 +231,9 @@ public class Database implements AutoCloseable {
         }
         int rootPage = pager.allocatePage();
         BTree.initializeEmptyRoot(pager, rootPage);
-        int id = nextCatalogId;
+        int id = live.nextCatalogId;
         catalog.insert(new Row(List.of(id, spec.name(), rootPage, sql)));
-        nextCatalogId = id+1;
+        live.nextCatalogId = id + 1;
 
         BTree table = table(tableName);
         registerIndex(spec.name(), table, spec.column(), rootPage, sql);
@@ -277,8 +290,8 @@ public class Database implements AutoCloseable {
 
         List<BTree> trees = new ArrayList<>();
         trees.add(catalog);
-        trees.addAll(tables.values());
-        for (Index idx : indexes.values()) trees.add(idx.tree);          
+        trees.addAll(cat().tables.values());
+        for (Index idx : cat().indexes.values()) trees.add(idx.tree);          
 
         for (BTree tree : trees) {
             List<Integer> pages = new ArrayList<>();
@@ -323,16 +336,16 @@ public class Database implements AutoCloseable {
 
     public void createTable(Schema schema, String sql) throws IOException, ExecuteException {
         String key = schema.tableName().toLowerCase();
-        if (tables.containsKey(key)) {
+        if (cat().tables.containsKey(key)) {
             throw new ExecuteException("Table '" + schema.tableName() + "' already exists");
         }
         int rootPage = pager.allocatePage();
         BTree.initializeEmptyRoot(pager, rootPage);
-        int id = nextCatalogId;
+        int id = live.nextCatalogId;
         catalog.insert(new Row(List.of(id, schema.tableName(), rootPage, sql)));
-        tables.put(key, new BTree(pager, schema.tableName(), rootPage, schema));
-        sqlByTable.put(key, sql);
-        nextCatalogId = id + 1;
+        live.tables.put(key, new BTree(pager, schema.tableName(), rootPage, schema));
+        live.sqlByTable.put(key, sql);
+        live.nextCatalogId = id + 1;
     }
 
     public boolean inTransaction() {
@@ -363,6 +376,16 @@ public class Database implements AutoCloseable {
     }
 
     void runStatement(Work work) throws ExecuteException {
+        if (pager.snapshot() != null) {
+            try {
+                work.run();
+            } catch (ExecuteException e) {
+                throw e;
+            } catch(IOException | RuntimeException e){
+                throw new ExecuteException("Statement failed: " + e.getMessage());
+            }
+            return;
+        }
         try {
             work.run();
         } catch (ExecuteException e) {
@@ -380,7 +403,7 @@ public class Database implements AutoCloseable {
     
     private void commitOrDiscard() throws ExecuteException {
         try {
-            pager.commit();
+            pager.commit(live.copy());
         } catch (IOException e) {
             discard();
             throw new ExecuteException("COMMIT failed, transaction rolled back: " + e.getMessage());

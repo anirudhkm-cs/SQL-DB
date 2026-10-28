@@ -68,15 +68,15 @@ public final class Server {
             return;
         }
 
-        try (ServerSocket listener = new ServerSocket(port)) {
-            System.out.println("listening on port " + listener.getLocalPort());
-            System.out.flush();
-            int nextId = 1;
-            while (true) {
-                Socket socket = listener.accept();
-                int id = nextId++;
-                new Thread(() -> handle(socket, db, lockTimeout, idleTimeout, id), "client-" + id).start();
-            }
+        ServerSocket listener = new ServerSocket(port);
+        System.out.println("listening on port " + listener.getLocalPort());
+        System.out.flush();
+        int n = 0;
+        while (true) {
+            Socket socket = listener.accept();
+            int id = ++n;
+            Thread t = new Thread(() -> handle(socket, db, lockTimeout, idleTimeout, id), "client-" + id);
+            t.start();
         }
     }
 
@@ -90,7 +90,7 @@ public final class Server {
         }
         System.out.println("client " + id + " left");
         if (shutdown) {
-            db.lock.writeLock().lock();
+            db.writeLock.lock();
             try {
                 db.close();
             } catch (IOException e) {
@@ -108,17 +108,18 @@ public final class Server {
         Session session = new Session(db, lockTimeout);
         try {
             while (true) {
-               socket.setSoTimeout(session.inTransaction() ? (int) idleTimeout : 0);
+                socket.setSoTimeout(session.inTransaction() ? (int) idleTimeout : 0);
                 Wire.Frame frame;
                 try {
                     frame = Wire.read(in);
                 } catch (SocketTimeoutException e) {
-                    Wire.write(out, Wire.ERROR, Wire.text("idle in a transaction for more than " + idleTimeout + " ms: rolled back, connection closed"));
+                    Wire.write(out, Wire.ERROR, Wire.text("idle in a transaction for more than " + idleTimeout
+                            + " ms: rolled back, connection closed"));
                     out.flush();
                     return false;
                 }
                 if (frame == null) {
-                    return false;                                   
+                    return false;                                    
                 }
                 if (frame.type() != Wire.QUERY) {
                     Wire.write(out, Wire.ERROR,
