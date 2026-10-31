@@ -95,7 +95,7 @@ The prompt changes to `db*>` while a transaction is open.
 Start the server:
 
 ```bash
-java -cp out db.Server mydata.db [port] [lock-timeout-ms] [idle-timeout-ms]
+java -cp out db.net.Server mydata.db [port] [lock-timeout-ms] [idle-timeout-ms]
 ```
 
 | Argument          | Default | Meaning |
@@ -107,7 +107,7 @@ java -cp out db.Server mydata.db [port] [lock-timeout-ms] [idle-timeout-ms]
 Then connect one or more clients from other terminals:
 
 ```bash
-java -cp out db.Client [host] [port]     # defaults: localhost 5435
+java -cp out db.net.Client [host] [port]     # defaults: localhost 5435
 ```
 
 The client accepts the same SQL and dot commands as the local shell.

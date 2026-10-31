@@ -1,0 +1,37 @@
+package db.storage;
+
+import java.util.List;
+
+public final class CrashPoints {
+
+    private CrashPoints() {}
+
+    public static final List<String> POINTS = List.of(
+            "mid-frame",        
+            "before-commit",    
+            "after-commit",     
+            "mid-checkpoint",   
+            "before-truncate"); 
+
+    static final int EXIT_CODE = 42;
+
+    private static String armed;
+
+    public static void arm(String point) {
+        if (!POINTS.contains(point)) {
+            throw new IllegalArgumentException("unknown crash point '" + point + "', expected one of " + POINTS);
+        }
+        armed = point;
+    }
+
+    static boolean isArmed(String point) {
+        return point.equals(armed);
+    }
+
+    static void hit(String point) {
+        if (isArmed(point)) {
+            System.out.flush();
+            Runtime.getRuntime().halt(EXIT_CODE);
+        }
+    }
+}

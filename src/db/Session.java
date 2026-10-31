@@ -1,40 +1,51 @@
 package db;
 
+import db.exec.Executor;
+import db.sql.Lexer;
+import db.sql.Parser;
+import db.sql.PrepareException;
+import db.sql.Statement;
+import db.sql.Token;
+import db.sql.TokenType;
+import db.storage.BTree;
+import db.storage.CrashPoints;
+import db.storage.Index;
+
 import java.io.IOException;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Lock;
 
-final class Session {
+public final class Session {
 
-    enum Kind { STATEMENT, META, ERROR }
+    public enum Kind { STATEMENT, META, ERROR }
 
-    record Result(Kind kind, String error) {
+    public record Result(Kind kind, String error) {
         static final Result STATEMENT = new Result(Kind.STATEMENT, null);
-        static final Result META = new Result(Kind.META, null);
+        public static final Result META = new Result(Kind.META, null);
         static Result error(String message) { return new Result(Kind.ERROR, message); }
     }
 
-    static final long DEFAULT_LOCK_TIMEOUT_MS = 5000;
+    public static final long DEFAULT_LOCK_TIMEOUT_MS = 5000;
 
     private final Database db;
     private final long lockTimeoutMs;
     private boolean holdsWriteLock = false;
 
-    Session(Database db) {
+    public Session(Database db) {
         this(db, DEFAULT_LOCK_TIMEOUT_MS);
     }
 
-    Session(Database db, long lockTimeoutMs) {
+    public Session(Database db, long lockTimeoutMs) {
         this.db = db;
         this.lockTimeoutMs = lockTimeoutMs;
     }
 
-    boolean inTransaction() {
+    public boolean inTransaction() {
         return holdsWriteLock;
     }
 
-    Result handle(String line, Output out) throws IOException {
+    public Result handle(String line, Output out) throws IOException {
         boolean write;
         try {
             write = needsWriteLock(line);
@@ -93,7 +104,7 @@ final class Session {
         }
     }
 
-    boolean close() {
+    public boolean close() {
         if (!holdsWriteLock) return false;
         try {
             db.rollback();

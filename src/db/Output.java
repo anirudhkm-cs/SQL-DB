@@ -3,7 +3,7 @@ package db;
 import java.util.List;
 import java.util.StringJoiner;
 
-interface Output {
+public interface Output {
 
     void row(List<Object> values);
 

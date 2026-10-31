@@ -1,5 +1,21 @@
 package db;
 
+import db.record.Column;
+import db.record.Row;
+import db.record.Schema;
+import db.sql.Ast;
+import db.sql.Binder;
+import db.sql.Lexer;
+import db.sql.PrepareException;
+import db.sql.SqlParser;
+import db.sql.Statement;
+import db.storage.BTree;
+import db.storage.Catalog;
+import db.storage.Cursor;
+import db.storage.Index;
+import db.storage.LeafNode;
+import db.storage.Pager;
+
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.file.Path;
@@ -19,8 +35,8 @@ public class Database implements AutoCloseable {
 
     static final String CATALOG_NAME = "jdb_catalog";
     static final int CATALOG_ID = 0, CATALOG_NAME_COL = 1, CATALOG_ROOT_COL = 2, CATALOG_SQL = 3;
-    static final int MAX_TABLE_NAME_BYTES = 64;
-    static final int MAX_SQL_BYTES = 1000;
+    public static final int MAX_TABLE_NAME_BYTES = 64;
+    public static final int MAX_SQL_BYTES = 1000;
     static final Schema CATALOG_SCHEMA = new Schema(CATALOG_NAME, List.of(
             Column.integer("id"),
             Column.text("name", MAX_TABLE_NAME_BYTES),
@@ -32,12 +48,12 @@ public class Database implements AutoCloseable {
 
     private Catalog live = new Catalog();
 
-    final ReentrantLock writeLock = new ReentrantLock(true);
+    public final ReentrantLock writeLock = new ReentrantLock(true);
 
     private boolean inTransaction = false;
 
     @FunctionalInterface
-    interface Work {
+    public interface Work {
         void run() throws IOException, ExecuteException;
     }
 
@@ -191,7 +207,7 @@ public class Database implements AutoCloseable {
         return out.toString();
     }
 
-    boolean nameInUse(String name) {
+    public boolean nameInUse(String name) {
         return cat().tables.containsKey(name.toLowerCase()) || cat().indexes.containsKey(name.toLowerCase());
     }
 
@@ -206,7 +222,7 @@ public class Database implements AutoCloseable {
         return idx == null ? null : idx.tree;
     }
 
-    List<Index> indexesOn(String table) {
+    public List<Index> indexesOn(String table) {
         List<Index> out = new ArrayList<>();
         for (Index idx : cat().indexes.values()) {
             if (idx.tableName.equalsIgnoreCase(table)) out.add(idx);
@@ -214,7 +230,7 @@ public class Database implements AutoCloseable {
         return out;
     }
 
-    Index indexOn(String table, int column) {
+    public Index indexOn(String table, int column) {
         for (Index idx : indexesOn(table)) {
             if (idx.column == column) return idx;
         }
@@ -248,14 +264,14 @@ public class Database implements AutoCloseable {
         }
     }
 
-    void insertRow(String tableName, Row row) throws IOException, ExecuteException {
+    public void insertRow(String tableName, Row row) throws IOException, ExecuteException {
         table(tableName).insert(row);
         for(Index idx: indexesOn(tableName)){
             idx.add(row);
         }
     }
 
-    boolean deleteRow(String tableName, Row old) throws IOException, ExecuteException {
+    public boolean deleteRow(String tableName, Row old) throws IOException, ExecuteException {
         if (!table(tableName).delete(old.key())) {
             return false;
         }
@@ -265,7 +281,7 @@ public class Database implements AutoCloseable {
         return true;
     }
 
-    boolean updateRow(String tableName, Row old, Row updated) throws IOException, ExecuteException {
+    public boolean updateRow(String tableName, Row old, Row updated) throws IOException, ExecuteException {
         if (!table(tableName).update(updated)) {
             return false;
         }
@@ -375,7 +391,7 @@ public class Database implements AutoCloseable {
         discard();
     }
 
-    void runStatement(Work work) throws ExecuteException {
+    public void runStatement(Work work) throws ExecuteException {
         if (pager.snapshot() != null) {
             try {
                 work.run();

@@ -44,7 +44,6 @@ public class Main {
             return;
         }
 
-        // 11: the REPL is now a thin loop around a Session; Server is another one.
         Session session = new Session(db);
         Output out = new ConsoleOutput();
         BufferedReader in = new BufferedReader(new InputStreamReader(System.in));

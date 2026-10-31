@@ -1,0 +1,16 @@
+# Compiled output
+out/
+*.class
+
+# Database files created at runtime
+*.db
+*.db-wal
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor / IDE
+.vscode/
+.idea/
+*.iml
